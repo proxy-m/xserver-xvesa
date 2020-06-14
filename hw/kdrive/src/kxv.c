@@ -247,18 +247,20 @@ KdXVFreeAdaptor(XvAdaptorPtr pAdaptor)
 {
    int i;
 
-   xfree(pAdaptor->name);
+   if(pAdaptor->name)
+      xfree(pAdaptor->name);
 
    if(pAdaptor->pEncodings) {
       XvEncodingPtr pEncode = pAdaptor->pEncodings;
 
       for(i = 0; i < pAdaptor->nEncodings; i++, pEncode++) {
-          xfree(pEncode->name);
+          if(pEncode->name) xfree(pEncode->name);
       }
       xfree(pAdaptor->pEncodings);
    }
 
-   xfree(pAdaptor->pFormats);
+   if(pAdaptor->pFormats)
+      xfree(pAdaptor->pFormats);
 
    if(pAdaptor->pPorts) {
       XvPortPtr pPort = pAdaptor->pPorts;
@@ -281,15 +283,17 @@ KdXVFreeAdaptor(XvAdaptorPtr pAdaptor)
       XvAttributePtr pAttribute = pAdaptor->pAttributes;
 
       for(i = 0; i < pAdaptor->nAttributes; i++, pAttribute++) {
-          xfree(pAttribute->name);
+          if(pAttribute->name) xfree(pAttribute->name);
       }
 
       xfree(pAdaptor->pAttributes);
    }
 
-   xfree(pAdaptor->pImages);
+   if(pAdaptor->nImages)
+      xfree(pAdaptor->pImages);
 
-   xfree(pAdaptor->devPriv.ptr);
+   if(pAdaptor->devPriv.ptr)
+      xfree(pAdaptor->devPriv.ptr);
 }
 
 static Bool
@@ -1153,8 +1157,11 @@ KdXVCloseScreen(int i, ScreenPtr pScreen)
        KdXVFreeAdaptor(pa);
   }
 
-  xfree(pxvs->pAdaptors);
+  if(pxvs->pAdaptors)
+    xfree(pxvs->pAdaptors);
+
   xfree(ScreenPriv);
+
 
   return TRUE;
 }

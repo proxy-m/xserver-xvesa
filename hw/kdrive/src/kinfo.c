@@ -1,5 +1,5 @@
 /*
- * Copyright © 1999 Keith Packard
+ * Copyright ï¿½ 1999 Keith Packard
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -29,6 +29,7 @@ KdCardInfo  *kdCardInfo;
 
 KdCardInfo *
 KdCardInfoAdd (KdCardFuncs  *funcs,
+	       KdCardAttr   *attr,
 	       void	    *closure)
 {
     KdCardInfo	*ci, **prev;
@@ -39,6 +40,7 @@ KdCardInfoAdd (KdCardFuncs  *funcs,
     for (prev = &kdCardInfo; *prev; prev = &(*prev)->next);
     *prev = ci;
     ci->cfuncs = funcs;
+    ci->attr = *attr;
     ci->closure = closure;
     ci->screenList = 0;
     ci->selected = 0;
@@ -136,28 +138,34 @@ KdFreePointer(KdPointerInfo *pi)
 {
     InputOption *option, *prev = NULL;
 
-    xfree(pi->name);
-    xfree(pi->path);
+    if (pi->name)
+        xfree(pi->name);
+    if (pi->path)
+        xfree(pi->path);
 
     for (option = pi->options; option; option = option->next) {
-        xfree(prev);
-        xfree(option->key);
-        xfree(option->value);
+        if (prev)
+            xfree(prev);
+        if (option->key)
+            xfree(option->key);
+        if (option->value)
+            xfree(option->value);
         prev = option;
     }
 
-    xfree(prev);
+    if (prev)
+        xfree(prev);
+
     xfree(pi);
 }
 
 void
 KdFreeKeyboard(KdKeyboardInfo *ki)
 {
-    xfree(ki->name);
-    xfree(ki->path);
-    xfree(ki->xkbRules);
-    xfree(ki->xkbModel);
-    xfree(ki->xkbLayout);
+    if (ki->name)
+        xfree(ki->name);
+    if (ki->path)
+        xfree(ki->path);
     ki->next = NULL;
     xfree(ki);
 }

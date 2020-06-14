@@ -24,6 +24,9 @@
 #include <kdrive-config.h>
 #endif
 #include "kdrive.h"
+#ifdef PSEUDO8
+#include "pseudo8/pseudo8.h"
+#endif
 #include <mivalidate.h>
 #include <dixstruct.h>
 #include "privates.h"
@@ -99,6 +102,7 @@ KdSetRootClip (ScreenPtr pScreen, BOOL enable)
     WindowPtr	pChild;
     Bool	WasViewable;
     Bool	anyMarked = FALSE;
+    RegionPtr	pOldClip = 0;
     WindowPtr   pLayerWin;
     BoxRec	box;
 
@@ -339,7 +343,7 @@ AbortDDX(void)
 }
 
 void
-ddxGiveUp (void)
+ddxGiveUp ()
 {
     AbortDDX ();
 }
@@ -389,6 +393,7 @@ KdParseScreen (KdScreenInfo *screen,
 {
     char    delim;
     char    save[1024];
+    int	    fb;
     int	    i;
     int	    pixels, mm;
 
@@ -402,7 +407,8 @@ KdParseScreen (KdScreenInfo *screen,
     screen->height_mm = 0;
     screen->subpixel_order = kdSubpixelOrder;
     screen->rate = 0;
-    screen->fb.depth = 0;
+    for (fb = 0; fb < KD_MAX_FB; fb++)
+	screen->fb[fb].depth = 0;
     if (!arg)
 	return;
     if (strlen (arg) >= sizeof (save))
@@ -475,18 +481,25 @@ KdParseScreen (KdScreenInfo *screen,
 	screen->randr |= RR_Reflect_Y;
     }
 
-    arg = KdParseFindNext (arg, "x/,", save, &delim);
-    if (save[0])
+    fb = 0;
+    while (fb < KD_MAX_FB)
     {
-	screen->fb.depth = atoi(save);
+	arg = KdParseFindNext (arg, "x/,", save, &delim);
+	if (!save[0])
+	    break;
+	screen->fb[fb].depth = atoi(save);
 	if (delim == '/')
 	{
 	    arg = KdParseFindNext (arg, "x,", save, &delim);
-	    if (save[0])
-		screen->fb.bitsPerPixel = atoi (save);
+	    if (!save[0])
+		break;
+	    screen->fb[fb].bitsPerPixel = atoi (save);
 	}
 	else
-	    screen->fb.bitsPerPixel = 0;
+	    screen->fb[fb].bitsPerPixel = 0;
+	if (delim != ',')
+	    break;
+	fb++;
     }
 
     if (delim == 'x')
@@ -507,6 +520,17 @@ KdParseScreen (KdScreenInfo *screen,
  *	2button	    emulate middle button
  *	{NMO}	    Reorder buttons
  */
+
+char *
+KdSaveString (char *str)
+{
+    char    *n = (char *) xalloc (strlen (str) + 1);
+
+    if (!n)
+	return 0;
+    strcpy (n, str);
+    return n;
+}
 
 void
 KdParseRgba (char *rgba)
@@ -529,7 +553,8 @@ void
 KdUseMsg (void)
 {
     ErrorF("\nTinyX Device Dependent Usage:\n");
-    ErrorF("-screen WIDTH[/WIDTHMM]xHEIGHT[/HEIGHTMM][@ROTATION][X][Y][xDEPTH/BPP[xFREQ]]  Specify screen characteristics\n");
+    ErrorF("-card pcmcia     Use PCMCIA card as additional screen\n");
+    ErrorF("-screen WIDTH[/WIDTHMM]xHEIGHT[/HEIGHTMM][@ROTATION][X][Y][xDEPTH/BPP{,DEPTH/BPP}[xFREQ]]  Specify screen characteristics\n");
     ErrorF("-rgba rgb/bgr/vrgb/vbgr/none   Specify subpixel ordering for LCD panels\n");
     ErrorF("-mouse driver [,n,,options]    Specify the pointer driver and its options (n is the number of buttons)\n");
     ErrorF("-keybd driver [,,options]      Specify the keyboard driver and its options\n");
@@ -544,6 +569,9 @@ KdUseMsg (void)
     ErrorF("-switchCmd       Command to execute on vt switch\n");
     ErrorF("-zap             Terminate server on Ctrl+Alt+Backspace\n");
     ErrorF("vtxx             Use virtual terminal xx instead of the next available\n");
+#ifdef PSEUDO8
+    p8UseMsg ();
+#endif
 }
 
 int
@@ -552,6 +580,14 @@ KdProcessArgument (int argc, char **argv, int i)
     KdCardInfo	    *card;
     KdScreenInfo    *screen;
 
+    if (!strcmp (argv[i], "-card"))
+    {
+	if ((i+1) < argc)
+	    InitCard (argv[i+1]);
+	else
+	    UseMsg ();
+	return 2;
+    }
     if (!strcmp (argv[i], "-screen"))
     {
 	if ((i+1) < argc)
@@ -668,7 +704,11 @@ KdProcessArgument (int argc, char **argv, int i)
         return 2;
     }
 
+#ifdef PSEUDO8
+    return p8ProcessArgument (argc, argv, i);
+#else
     return 0;
+#endif
 }
 
 /*
@@ -910,6 +950,7 @@ KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
     KdScreenInfo	*screen = kdCurrentScreen;
     KdCardInfo		*card = screen->card;
     KdPrivScreenPtr	pScreenPriv;
+    int			fb;
     /*
      * note that screen->fb is set up for the nominal orientation
      * of the screen; that means if randr is rotated, the values
@@ -939,7 +980,8 @@ KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
     screen->pScreen = pScreen;
     pScreenPriv->screen = screen;
     pScreenPriv->card = card;
-    pScreenPriv->bytesPerPixel = screen->fb.bitsPerPixel >> 3;
+    for (fb = 0; fb < KD_MAX_FB && screen->fb[fb].depth; fb++)
+	pScreenPriv->bytesPerPixel[fb] = screen->fb[fb].bitsPerPixel >> 3;
     pScreenPriv->dpmsState = KD_DPMS_NORMAL;
 #ifdef PANORAMIX
     dixScreenOrigins[pScreen->myNum] = screen->origin;
@@ -953,11 +995,11 @@ KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
      * backing store
      */
     if (!fbSetupScreen (pScreen,
-			screen->fb.frameBuffer,
+			screen->fb[0].frameBuffer,
 			width, height,
 			monitorResolution, monitorResolution,
-			screen->fb.pixelStride,
-			screen->fb.bitsPerPixel))
+			screen->fb[0].pixelStride,
+			screen->fb[0].bitsPerPixel))
     {
 	return FALSE;
     }
@@ -973,14 +1015,36 @@ KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
     pScreen->SaveScreen		= KdSaveScreen;
     pScreen->CreateWindow	= KdCreateWindow;
 
-    if (!fbFinishScreenInit (pScreen,
-			     screen->fb.frameBuffer,
-			     width, height,
-			     monitorResolution, monitorResolution,
-			     screen->fb.pixelStride,
-			     screen->fb.bitsPerPixel))
+#if KD_MAX_FB > 1
+    if (screen->fb[1].depth)
     {
-	return FALSE;
+	if (!fbOverlayFinishScreenInit (pScreen,
+					screen->fb[0].frameBuffer,
+					screen->fb[1].frameBuffer,
+					width, height,
+					monitorResolution, monitorResolution,
+					screen->fb[0].pixelStride,
+					screen->fb[1].pixelStride,
+					screen->fb[0].bitsPerPixel,
+					screen->fb[1].bitsPerPixel,
+					screen->fb[0].depth,
+					screen->fb[1].depth))
+	{
+	    return FALSE;
+	}
+    }
+    else
+#endif
+    {
+	if (!fbFinishScreenInit (pScreen,
+				 screen->fb[0].frameBuffer,
+				 width, height,
+				 monitorResolution, monitorResolution,
+				 screen->fb[0].pixelStride,
+				 screen->fb[0].bitsPerPixel))
+	{
+	    return FALSE;
+	}
     }
 
     /*
@@ -1014,6 +1078,10 @@ KdScreenInit(int index, ScreenPtr pScreen, int argc, char **argv)
     if (!screen->dumb && card->cfuncs->initAccel)
 	if (!(*card->cfuncs->initAccel) (pScreen))
 	    screen->dumb = TRUE;
+
+#ifdef PSEUDO8
+    (void) p8Init (pScreen, PSEUDO8_USE_DEFAULT);
+#endif
 
     if (card->cfuncs->finishInitScreen)
 	if (!(*card->cfuncs->finishInitScreen) (pScreen))
@@ -1110,6 +1178,7 @@ KdSetPixmapFormats (ScreenInfo	*pScreenInfo)
     KdScreenInfo    *screen;
     int		    i;
     int		    bpp;
+    int		    fb;
     PixmapFormatRec *format;
 
     for (i = 1; i <= 32; i++)
@@ -1125,13 +1194,16 @@ KdSetPixmapFormats (ScreenInfo	*pScreenInfo)
     {
 	for (screen = card->screenList; screen; screen = screen->next)
 	{
-	    bpp = screen->fb.bitsPerPixel;
-	    if (bpp == 24)
-		bpp = 32;
-	    if (!depthToBpp[screen->fb.depth])
-		depthToBpp[screen->fb.depth] = bpp;
-	    else if (depthToBpp[screen->fb.depth] != bpp)
-		return FALSE;
+	    for (fb = 0; fb < KD_MAX_FB && screen->fb[fb].depth; fb++)
+	    {
+		bpp = screen->fb[fb].bitsPerPixel;
+		if (bpp == 24)
+		    bpp = 32;
+		if (!depthToBpp[screen->fb[fb].depth])
+		    depthToBpp[screen->fb[fb].depth] = bpp;
+		else if (depthToBpp[screen->fb[fb].depth] != bpp)
+		    return FALSE;
+	    }
 	}
     }
 
@@ -1177,15 +1249,20 @@ KdAddScreen (ScreenInfo	    *pScreenInfo,
     {
 	unsigned long	visuals;
 	Pixel		rm, gm, bm;
+	int		fb;
 
 	visuals = 0;
 	rm = gm = bm = 0;
-	if (pScreenInfo->formats[i].depth == screen->fb.depth)
+	for (fb = 0; fb < KD_MAX_FB && screen->fb[fb].depth; fb++)
 	{
-	    visuals = screen->fb.visuals;
-	    rm = screen->fb.redMask;
-	    gm = screen->fb.greenMask;
-	    bm = screen->fb.blueMask;
+	    if (pScreenInfo->formats[i].depth == screen->fb[fb].depth)
+	    {
+		visuals = screen->fb[fb].visuals;
+		rm = screen->fb[fb].redMask;
+		gm = screen->fb[fb].greenMask;
+		bm = screen->fb[fb].blueMask;
+		break;
+	    }
 	}
 	fbSetVisualTypesAndMasks (pScreenInfo->formats[i].depth,
 				  visuals,
@@ -1204,20 +1281,47 @@ int
 KdDepthToFb (ScreenPtr	pScreen, int depth)
 {
     KdScreenPriv(pScreen);
+    int	    fb;
 
-    for (fb = 0; fb <= KD_MAX_FB && pScreenPriv->screen->fb.frameBuffer; fb++)
-	if (pScreenPriv->screen->fb.depth == depth)
+    for (fb = 0; fb <= KD_MAX_FB && pScreenPriv->screen->fb[fb].frameBuffer; fb++)
+	if (pScreenPriv->screen->fb[fb].depth == depth)
 	    return fb;
 }
 
 #endif
 
-static int
-KdSignalWrapper (int signum)
+#ifdef HAVE_BACKTRACE
+/* shamelessly ripped from xf86Events.c */
+void
+KdBacktrace (int signum)
+{
+    void *array[32]; /* more than 32 and you have bigger problems */
+    size_t size, i;
+    char **strings;
+
+    signal(signum, SIG_IGN);
+
+    size = backtrace (array, 32);
+    fprintf (stderr, "\nBacktrace (%d deep):\n", size);
+    strings = backtrace_symbols (array, size);
+    for (i = 0; i < size; i++)
+        fprintf (stderr, "%d: %s\n", i, strings[i]);
+    free (strings);
+
+    kdCaughtSignal = TRUE;
+    if (signum == SIGSEGV)
+        FatalError("Segmentation fault caught\n");
+    else if (signum > 0)
+        FatalError("Signal %d caught\n", signum);
+}
+#else
+void
+KdBacktrace (int signum)
 {
     kdCaughtSignal = TRUE;
     return 1; /* use generic OS layer cleanup & abort */
 }
+#endif
 
 void
 KdInitOutput (ScreenInfo    *pScreenInfo,
@@ -1272,6 +1376,7 @@ OsVendorFatalError(void)
 {
 }
 
+#ifdef DPMSExtension
 int
 DPMSSet(ClientPtr client, int level)
 {
@@ -1283,3 +1388,5 @@ DPMSSupported (void)
 {
     return FALSE;
 }
+#endif
+

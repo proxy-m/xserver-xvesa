@@ -1,5 +1,5 @@
 /*
- * Copyright © 1999 Keith Packard
+ * Copyright ï¿½ 1999 Keith Packard
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -24,6 +24,30 @@
 #include <kdrive-config.h>
 #endif
 #include "kdrive.h"
+
+
+Bool
+KdShadowFbAlloc (KdScreenInfo *screen, int fb, Bool rotate)
+{
+    int	    paddedWidth;
+    void    *buf;
+    int	    width = rotate ? screen->height : screen->width;
+    int	    height = rotate ? screen->width : screen->height;
+    int	    bpp = screen->fb[fb].bitsPerPixel;
+
+    /* use fb computation for width */
+    paddedWidth = ((width * bpp + FB_MASK) >> FB_SHIFT) * sizeof (FbBits);
+    buf = xalloc (paddedWidth * height);
+    if (!buf)
+	return FALSE;
+    if (screen->fb[fb].shadow)
+	xfree (screen->fb[fb].frameBuffer);
+    screen->fb[fb].shadow = TRUE;
+    screen->fb[fb].frameBuffer = buf;
+    screen->fb[fb].byteStride = paddedWidth;
+    screen->fb[fb].pixelStride = paddedWidth * 8 / bpp;
+    return TRUE;
+}
 
 Bool
 KdShadowFbAlloc (KdScreenInfo *screen, Bool rotate)
