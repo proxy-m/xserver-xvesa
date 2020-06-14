@@ -48,6 +48,8 @@
 #include "exevents.h"
 #include "extinit.h"
 #include "exglobals.h"
+#include "eventstr.h"
+#include "xserver-properties.h"
 
 #define AtomFromName(x) MakeAtom(x, strlen(x), 1)
 
@@ -390,6 +392,8 @@ KdPointerProc(DeviceIntPtr pDevice, int onoff)
     DevicePtr       pDev = (DevicePtr)pDevice;
     KdPointerInfo   *pi;
     Atom            xiclass;
+    Atom            *btn_labels;
+    Atom            *axes_labels;
 
     if (!pDev)
 	return BadImplementation;
@@ -437,9 +441,47 @@ KdPointerProc(DeviceIntPtr pDevice, int onoff)
             return !Success;
         }
 
-	InitPointerDeviceStruct(pDev, pi->map, pi->nButtons,
+	btn_labels = xcalloc(pi->nButtons, sizeof(Atom));
+	if (!btn_labels)
+	    return BadAlloc;
+	axes_labels = xcalloc(pi->nAxes, sizeof(Atom));
+	if (!axes_labels) {
+	    xfree(btn_labels);
+	    return BadAlloc;
+	}
+
+	switch(pi->nAxes)
+	{
+	    default:
+	    case 7:
+		btn_labels[6] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_HWHEEL_RIGHT);
+	    case 6:
+		btn_labels[5] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_HWHEEL_LEFT);
+	    case 5:
+		btn_labels[4] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_WHEEL_DOWN);
+	    case 4:
+		btn_labels[3] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_WHEEL_UP);
+	    case 3:
+		btn_labels[2] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_RIGHT);
+	    case 2:
+		btn_labels[1] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_MIDDLE);
+	    case 1:
+		btn_labels[0] = XIGetKnownProperty(BTN_LABEL_PROP_BTN_LEFT);
+	    case 0:
+		break;
+	}
+
+	if (pi->nAxes >= 2) {
+	    axes_labels[0] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_X);
+	    axes_labels[1] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_Y);
+	}
+
+	InitPointerDeviceStruct(pDev, pi->map, pi->nButtons, btn_labels,
 	    (PtrCtrlProcPtr)NoopDDA,
-	    GetMotionHistorySize(), pi->nAxes);
+	    GetMotionHistorySize(), pi->nAxes, axes_labels);
+
+        xfree(btn_labels);
+        xfree(axes_labels);
 
         if (pi->inputClass == KD_TOUCHSCREEN) {
             InitAbsoluteClassDeviceStruct(pDevice);
@@ -816,7 +858,6 @@ KdKeyboardProc(DeviceIntPtr pDevice, int onoff)
 #endif
 	ret = InitKeyboardDeviceStruct(pDev,
 				       &ki->keySyms,
-				       ki->modmap,
 				       KdBell, KdKbdCtrl);
 	if (!ret) {
             ErrorF("Couldn't initialise keyboard %s\n", ki->name);
@@ -1880,57 +1921,6 @@ CARD32	KdSpecialKeys = 0;
 
 extern int nClients;
 
-static void
-KdCheckSpecialKeys(KdKeyboardInfo *ki, int type, int sym)
-{
-    if (!ki)
-        return;
-
-    /*
-     * Ignore key releases
-     */
-
-    if (type == KeyRelease)
-        return;
-
-    /* Some iPaq keyboard -> mouse button mapping used to be here, but I
-     * refuse to perpetuate this madness. -daniels */
-
-    /*
-     * Check for control/alt pressed
-     */
-    if ((ki->dixdev->key->state & (ControlMask|Mod1Mask)) !=
-	(ControlMask|Mod1Mask))
-	return;
-
-    /*
-     * Let OS function see keysym first
-     */
-
-    if (kdOsFuncs->SpecialKey)
-	if ((*kdOsFuncs->SpecialKey) (sym))
-	    return;
-
-    /*
-     * Now check for backspace or delete; these signal the
-     * X server to terminate
-     *
-     * I can't believe it's not XKB. -daniels
-     */
-    switch (sym) {
-    case XK_BackSpace:
-    case XK_Delete:
-    case XK_KP_Delete:
-	/*
-	 * Set the dispatch exception flag so the server will terminate the
-	 * next time through the dispatch loop.
-	 */
-	if (kdAllowZap || party_like_its_1989)
-	    dispatchException |= DE_TERMINATE;
-	break;
-    }
-}
-
 /*
  * kdEnqueueKeyboardEvent
  *
@@ -1998,9 +1988,10 @@ KdCheckLock (void)
         if (tmp->LockLed && tmp->dixdev && tmp->dixdev->key) {
             keyc = tmp->dixdev->key;
             isSet = (tmp->leds & (1 << (tmp->LockLed-1))) != 0;
-            shouldBeSet = (keyc->state & LockMask) != 0;
-            if (isSet != shouldBeSet)
-                KdSetLed (tmp, tmp->LockLed, shouldBeSet);
+            /* FIXME: Just use XKB indicators! */
+            ///shouldBeSet = (keyc->state & LockMask) != 0;
+            ///if (isSet != shouldBeSet)
+            ///    KdSetLed (tmp, tmp->LockLed, shouldBeSet);
         }
     }
 }
@@ -2345,7 +2336,7 @@ miPointerScreenFuncRec kdPointerScreenFuncs =
 };
 
 void
-ProcessInputEvents ()
+ProcessInputEvents (void)
 {
     mieqProcessInputEvents();
     miPointerUpdateSprite(inputInfo.pointer);
@@ -2419,7 +2410,8 @@ ChangeDeviceControl(register ClientPtr client, DeviceIntPtr pDev,
 }
 
 int
-NewInputDeviceRequest(InputOption *options, DeviceIntPtr *pdev)
+NewInputDeviceRequest(InputOption *options, InputAttributes *attrs,
+                      DeviceIntPtr *pdev)
 {
     InputOption *option = NULL;
     KdPointerInfo *pi = NULL;
@@ -2498,16 +2490,16 @@ NewInputDeviceRequest(InputOption *options, DeviceIntPtr *pdev)
 
     if (pi) {
         if (KdAddPointer(pi) != Success ||
-            ActivateDevice(pi->dixdev) != Success ||
-            EnableDevice(pi->dixdev) != TRUE) {
+            ActivateDevice(pi->dixdev, TRUE) != Success ||
+            EnableDevice(pi->dixdev, TRUE) != TRUE) {
             ErrorF("couldn't add or enable pointer\n");
             return BadImplementation;
         }
     }
     else if (ki) {
         if (KdAddKeyboard(ki) != Success ||
-            ActivateDevice(ki->dixdev) != Success ||
-            EnableDevice(ki->dixdev) != TRUE) {
+            ActivateDevice(ki->dixdev, TRUE) != Success ||
+            EnableDevice(ki->dixdev, TRUE) != TRUE) {
             ErrorF("couldn't add or enable keyboard\n");
             return BadImplementation;
         }
@@ -2525,5 +2517,5 @@ NewInputDeviceRequest(InputOption *options, DeviceIntPtr *pdev)
 void
 DeleteInputDeviceRequest(DeviceIntPtr pDev)
 {
-    RemoveDevice(pDev);
+    RemoveDevice(pDev, TRUE);
 }

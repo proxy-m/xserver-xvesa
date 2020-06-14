@@ -25,7 +25,6 @@
 #endif
 #include "kdrive.h"
 
-
 Bool
 KdShadowFbAlloc (KdScreenInfo *screen, int fb, Bool rotate)
 {
@@ -49,37 +48,14 @@ KdShadowFbAlloc (KdScreenInfo *screen, int fb, Bool rotate)
     return TRUE;
 }
 
-Bool
-KdShadowFbAlloc (KdScreenInfo *screen, Bool rotate)
-{
-    int	    paddedWidth;
-    void    *buf;
-    int	    width = rotate ? screen->height : screen->width;
-    int	    height = rotate ? screen->width : screen->height;
-    int	    bpp = screen->fb.bitsPerPixel;
-
-    /* use fb computation for width */
-    paddedWidth = ((width * bpp + FB_MASK) >> FB_SHIFT) * sizeof (FbBits);
-    buf = xalloc (paddedWidth * height);
-    if (!buf)
-	return FALSE;
-    if (screen->fb.shadow)
-	xfree (screen->fb.frameBuffer);
-    screen->fb.shadow = TRUE;
-    screen->fb.frameBuffer = buf;
-    screen->fb.byteStride = paddedWidth;
-    screen->fb.pixelStride = paddedWidth * 8 / bpp;
-    return TRUE;
-}
-
 void
-KdShadowFbFree (KdScreenInfo *screen)
+KdShadowFbFree (KdScreenInfo *screen, int fb)
 {
-    if (screen->fb.shadow)
+    if (screen->fb[fb].shadow)
     {
-	xfree (screen->fb.frameBuffer);
-	screen->fb.frameBuffer = 0;
-	screen->fb.shadow = FALSE;
+	xfree (screen->fb[fb].frameBuffer);
+	screen->fb[fb].frameBuffer = 0;
+	screen->fb[fb].shadow = FALSE;
     }
 }
 
@@ -88,12 +64,14 @@ KdShadowSet (ScreenPtr pScreen, int randr, ShadowUpdateProc update, ShadowWindow
 {
     KdScreenPriv(pScreen);
     KdScreenInfo *screen = pScreenPriv->screen;
+    int	 fb;
 
     shadowRemove (pScreen, pScreen->GetScreenPixmap(pScreen));
-    if(screen->fb.shadow)
+    for (fb = 0; fb < KD_MAX_FB && screen->fb[fb].depth; fb++)
     {
-	return shadowAdd (pScreen, pScreen->GetScreenPixmap(pScreen),
-			  update, window, randr, 0);
+	if (screen->fb[fb].shadow)
+            return shadowAdd (pScreen, pScreen->GetScreenPixmap(pScreen),
+                              update, window, randr, 0);
     }
     return TRUE;
 }

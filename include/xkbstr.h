@@ -70,6 +70,10 @@ typedef struct _XkbStateRec {
 
 	unsigned short  ptr_buttons; /* core pointer buttons */
 } XkbStateRec,*XkbStatePtr;
+#define	XkbModLocks(s)	 ((s)->locked_mods)
+#define	XkbStateMods(s)	 ((s)->base_mods|(s)->latched_mods|XkbModLocks(s))
+#define	XkbGroupLock(s)	 ((s)->locked_group)
+#define	XkbStateGroup(s) ((s)->base_group+(s)->latched_group+XkbGroupLock(s))
 #define	XkbStateFieldFromRec(s)	XkbBuildCoreState((s)->lookup_mods,(s)->group)
 #define	XkbGrabStateFromRec(s)	XkbBuildCoreState((s)->grab_mods,(s)->group)
 

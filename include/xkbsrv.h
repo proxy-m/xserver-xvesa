@@ -275,10 +275,10 @@ typedef struct
 	device->public.realInputProc = oldprocs->realInputProc; \
 	device->unwrapProc = oldprocs->unwrapProc;
 
-extern DevPrivateKey xkbDevicePrivateKey;
+extern _X_EXPORT DevPrivateKey xkbDevicePrivateKey;
 #define XKBDEVICEINFO(dev) ((xkbDeviceInfoPtr)dixLookupPrivate(&(dev)->devPrivates, xkbDevicePrivateKey))
 
-extern void xkbUnwrapProc(DeviceIntPtr, DeviceHandleProc, pointer);
+extern _X_EXPORT void xkbUnwrapProc(DeviceIntPtr, DeviceHandleProc, pointer);
 
 /***====================================================================***/
 
@@ -308,6 +308,11 @@ extern	_X_EXPORT int	DeviceKeyPress,DeviceKeyRelease,DeviceMotionNotify;
 extern	_X_EXPORT int	DeviceButtonPress,DeviceButtonRelease;
 
 #define	Status		int
+
+#ifndef True
+#define	True	TRUE
+#define	False	FALSE
+#endif
 
 extern _X_EXPORT void XkbUseMsg(
     void

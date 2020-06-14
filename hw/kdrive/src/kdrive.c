@@ -1368,7 +1368,7 @@ KdInitOutput (ScreenInfo    *pScreenInfo,
 	for (screen = card->screenList; screen; screen = screen->next)
 	    KdAddScreen (pScreenInfo, screen, argc, argv);
 
-    OsRegisterSigWrapper(KdSignalWrapper);
+    signal(SIGSEGV, KdBacktrace);
 }
 
 void
