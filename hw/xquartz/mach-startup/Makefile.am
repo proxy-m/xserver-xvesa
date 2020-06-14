@@ -1,14 +1,12 @@
 AM_CPPFLAGS = \
 	-DBUILD_DATE=\"$(BUILD_DATE)\" \
-	-DXSERVER_VERSION=\"$(VERSION)\" \
-	-DMACHO_STARTUP
+	-DXSERVER_VERSION=\"$(VERSION)\"
 
 x11appdir = $(APPLE_APPLICATIONS_DIR)/X11.app/Contents/MacOS
 x11app_PROGRAMS = X11
 
 dist_X11_SOURCES = \
 	bundle-main.c 
-#	launchd_fd.c
 
 nodist_X11_SOURCES = \
 	mach_startupServer.c \
@@ -19,21 +17,26 @@ X11_LDADD = \
 	$(top_builddir)/hw/xquartz/xpr/libXquartzXpr.la \
 	$(top_builddir)/dix/dixfonts.lo \
 	$(top_builddir)/miext/rootless/librootless.la \
+	$(top_builddir)/hw/xquartz/pbproxy/libxpbproxy.la \
 	$(DARWIN_LIBS) $(XSERVER_LIBS) $(XSERVER_SYS_LIBS) -lXplugin -lX11
-
-if INTEGRATED_XPBPROXY
-X11_LDADD += $(top_builddir)/hw/xquartz/pbproxy/libxpbproxy.la
-endif
 
 X11_LDFLAGS =  \
 	-XCClinker -Objc \
 	-Wl,-u,_miDCInitialize \
 	-Wl,-framework,Carbon \
-	-L/System/Library/Frameworks/OpenGL.framework/Libraries -lGL \
-	-Wl,-framework,OpenGL \
 	-Wl,-framework,Cocoa \
 	-Wl,-framework,CoreAudio \
 	-Wl,-framework,IOKit
+
+if GLX
+X11_LDADD += \
+	$(top_builddir)/hw/xquartz/GL/libCGLCore.la \
+	$(top_builddir)/glx/libglx.la
+
+X11_LDFLAGS += \
+	-L/System/Library/Frameworks/OpenGL.framework/Libraries -lGL \
+	-Wl,-framework,OpenGL
+endif
 
 bin_PROGRAMS = Xquartz
 

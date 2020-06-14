@@ -48,6 +48,10 @@
 #include <servers/bootstrap.h>
 #include "mach_startup.h"
 
+#include <signal.h>
+
+#include <AvailabilityMacros.h>
+
 #include "launchd_fd.h"
 
 #ifndef BUILD_DATE
@@ -61,7 +65,11 @@
 
 static char x11_path[PATH_MAX + 1];
 
+static pid_t x11app_pid = 0;
+
 static void set_x11_path() {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+
     CFURLRef appURL = NULL;
     CFBundleRef bundle = NULL;
     OSStatus osstatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR(kX11AppBundleId), nil, nil, &appURL);
@@ -113,9 +121,12 @@ static void set_x11_path() {
                     kX11AppBundleId, (int)osstatus);
             exit(11);
     }
+#else
+    /* TODO: Make Tiger smarter... but TBH, this should never get called on Tiger... */
+    strlcpy(x11_path, "/Applications/Utilities/X11.app/Contents/MacOS/X11", sizeof(x11_path));
+#endif
 }
 
-#ifdef MACHO_STARTUP
 static int connect_to_socket(const char *filename) {
     struct sockaddr_un servaddr_un;
     struct sockaddr *servaddr;
@@ -175,24 +186,25 @@ static void send_fd_handoff(int connected_fd, int launchd_fd) {
     
     *((int*)CMSG_DATA(cmsg)) = launchd_fd;
     
-#ifdef DEBUG
-    fprintf(stderr, "Xquartz: Handoff connection established.  Sending message.\n");
-#endif
     if(sendmsg(connected_fd, &msg, 0) < 0) {
-        fprintf(stderr, "Xquartz: Error sending $DISPLAY file descriptor: %s\n", strerror(errno));
+        fprintf(stderr, "Xquartz: Error sending $DISPLAY file descriptor over fd %d: %d -- %s\n", connected_fd, errno, strerror(errno));
         return;
     }
 
 #ifdef DEBUG
-    fprintf(stderr, "Xquartz: Message sent.  Closing.\n");
+    fprintf(stderr, "Xquartz: Message sent.  Closing handoff fd.\n");
 #endif
+
     close(connected_fd);
 }
 
-#endif
+static void signal_handler(int sig) {
+    if(x11app_pid)
+        kill(x11app_pid, sig);
+    _exit(0);
+}
 
 int main(int argc, char **argv, char **envp) {
-#ifdef MACHO_STARTUP
     int envpc;
     kern_return_t kr;
     mach_port_t mp;
@@ -201,7 +213,6 @@ int main(int argc, char **argv, char **envp) {
     size_t i;
     int launchd_fd;
     string_t handoff_socket_filename;
-#endif
     sig_t handler;
 
     if(argc == 2 && !strcmp(argv[1], "-version")) {
@@ -220,7 +231,10 @@ int main(int argc, char **argv, char **envp) {
         kill(getppid(), SIGUSR1);
     signal(SIGUSR1, handler);
 
-#ifdef MACHO_STARTUP
+    /* Pass on SIGs to X11.app */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    
     /* Get the $DISPLAY FD */
     launchd_fd = launchd_display_fd();
 
@@ -258,6 +272,9 @@ int main(int argc, char **argv, char **envp) {
         }
     }
     
+    /* Get X11.app's pid */
+    request_pid(mp, &x11app_pid);
+
     /* Handoff the $DISPLAY FD */
     if(launchd_fd != -1) {
         size_t try, try_max;
@@ -268,12 +285,16 @@ int main(int argc, char **argv, char **envp) {
                 fprintf(stderr, "Xquartz: Failed to request a socket from the server to send the $DISPLAY fd over (try %d of %d)\n", (int)try+1, (int)try_max);
                 continue;
             }
-            
+
             handoff_fd = connect_to_socket(handoff_socket_filename);
             if(handoff_fd == -1) {
                 fprintf(stderr, "Xquartz: Failed to connect to socket (try %d of %d)\n", (int)try+1, (int)try_max);
                 continue;
             }
+
+#ifdef DEBUG
+            fprintf(stderr, "Xquartz: Handoff connection established (try %d of %d) on fd %d, \"%s\".  Sending message.\n", (int)try+1, (int)try_max, handoff_fd, handoff_socket_filename);
+#endif
 
             send_fd_handoff(handoff_fd, launchd_fd);            
             close(handoff_fd);
@@ -308,9 +329,4 @@ int main(int argc, char **argv, char **envp) {
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;
-#else
-    set_x11_path();
-    argv[0] = x11_path;
-    return execvp(x11_path, argv);
-#endif
 }

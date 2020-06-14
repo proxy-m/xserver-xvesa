@@ -46,12 +46,10 @@
 #include "globals.h"
 #include "dix.h"
 
-#ifdef XINPUT
-# include <X11/extensions/XI.h>
-# include <X11/extensions/XIproto.h>
-# include "exevents.h"
-# include "extinit.h"
-#endif
+#include <X11/extensions/XI.h>
+#include <X11/extensions/XIproto.h>
+#include "exevents.h"
+#include "extinit.h"
 
 #include <sys/types.h>
 #include <sys/time.h>
@@ -88,7 +86,8 @@ FILE *debug_log_fp = NULL;
  * X server shared global variables
  */
 int                     darwinScreensFound = 0;
-int                     darwinScreenIndex = 0;
+static int              darwinScreenKeyIndex;
+DevPrivateKey           darwinScreenKey = &darwinScreenKeyIndex;
 io_connect_t            darwinParamConnect = 0;
 int                     darwinEventReadFD = -1;
 int                     darwinEventWriteFD = -1;
@@ -115,10 +114,10 @@ int                     darwinFakeMouse3Mask = NX_COMMANDMASK;
 #endif
 
 // Modifier mask for overriding event delivery to appkit (might be useful to set this to rcommand for input menu
-int                     darwinAppKitModMask = 0; // Any of these bits
+unsigned int            darwinAppKitModMask = 0; // Any of these bits
 
 // Modifier mask for items in the Window menu (0 and -1 cause shortcuts to be disabled)
-int                     windowItemModMask = NX_COMMANDMASK;
+unsigned int            windowItemModMask = NX_COMMANDMASK;
 
 // devices
 DeviceIntPtr            darwinKeyboard = NULL;
@@ -152,8 +151,8 @@ const int NUMFORMATS = sizeof(formats)/sizeof(formats[0]);
 #ifndef BUILD_DATE
 #define BUILD_DATE ""
 #endif
-#ifndef XSERVER_VERSION
-#define XSERVER_VERSION "?"
+#ifndef XORG_RELEASE
+#define XORG_RELEASE "?"
 #endif
 
 void DDXRingBell(int volume, int pitch, int duration) {
@@ -201,7 +200,7 @@ static Bool DarwinAddScreen(int index, ScreenPtr pScreen, int argc, char **argv)
     dfb = xalloc(sizeof(DarwinFramebufferRec));
 
     // SCREEN_PRIV(pScreen) = dfb;
-    pScreen->devPrivates[darwinScreenIndex].ptr = dfb;
+    dixSetPrivate(&pScreen->devPrivates, darwinScreenKey, dfb);
 
     // setup hardware/mode specific details
     ret = QuartzAddScreen(foundIndex, pScreen);
@@ -222,10 +221,17 @@ static Bool DarwinAddScreen(int index, ScreenPtr pScreen, int argc, char **argv)
 // TODO: Make PseudoColor visuals not suck in TrueColor mode  
 //    if(dfb->depth > 8)
 //        miSetVisualTypesAndMasks(8, PseudoColorMask, 8, PseudoColor, 0, 0, 0);
+
+#if 0
+    /*
+     * These aren't used anymore.  xpr/xprScreen.c initializes the dfb struct
+     * above based on the display properties.
+     */
     if(dfb->depth > 15)
         miSetVisualTypesAndMasks(15, LARGE_VISUALS, 5, TrueColor, 0x7c00, 0x03e0, 0x001f);
     if(dfb->depth > 24)
         miSetVisualTypesAndMasks(24, LARGE_VISUALS, 8, TrueColor, 0x00ff0000, 0x0000ff00, 0x000000ff);
+#endif
 
     miSetPixmapDepths();
 
@@ -339,7 +345,6 @@ static int DarwinMouseProc(DeviceIntPtr pPointer, int what) {
             
             // Set button map.
             InitPointerDeviceStruct((DevicePtr)pPointer, map, 7,
-                                    GetMotionHistory,
                                     (PtrCtrlProcPtr)NoopDDA,
                                     GetMotionHistorySize(), 2);
 			InitAbsoluteClassDeviceStruct(pPointer);
@@ -370,7 +375,6 @@ static int DarwinTabletProc(DeviceIntPtr pPointer, int what) {
             
             // Set button map.
             InitPointerDeviceStruct((DevicePtr)pPointer, map, 3,
-                                    GetMotionHistory,
                                     (PtrCtrlProcPtr)NoopDDA,
                                     GetMotionHistorySize(), 5);
             pPointer->valuator->mode = Absolute; // Relative
@@ -471,7 +475,7 @@ int DarwinParseModifierList(const char *constmodifiers, int separatelr)
  */
 void InitInput( int argc, char **argv )
 {
-    darwinKeyboard = AddInputDevice(DarwinKeybdProc, TRUE);
+    darwinKeyboard = AddInputDevice(serverClient, DarwinKeybdProc, TRUE);
     RegisterKeyboardDevice( darwinKeyboard );
     darwinKeyboard->name = strdup("keyboard");
 
@@ -489,19 +493,19 @@ void InitInput( int argc, char **argv )
         gdkdev->info.source = GDK_SOURCE_PEN;
     */
 
-    darwinPointer = AddInputDevice(DarwinMouseProc, TRUE);
+    darwinPointer = AddInputDevice(serverClient, DarwinMouseProc, TRUE);
     RegisterPointerDevice( darwinPointer );
     darwinPointer->name = strdup("pointer");
 
-    darwinTabletStylus = AddInputDevice(DarwinTabletProc, TRUE);
+    darwinTabletStylus = AddInputDevice(serverClient, DarwinTabletProc, TRUE);
     RegisterPointerDevice( darwinTabletStylus );
     darwinTabletStylus->name = strdup("pen");
 
-    darwinTabletCursor = AddInputDevice(DarwinTabletProc, TRUE);
+    darwinTabletCursor = AddInputDevice(serverClient, DarwinTabletProc, TRUE);
     RegisterPointerDevice( darwinTabletCursor );
     darwinTabletCursor->name = strdup("cursor");
 
-    darwinTabletEraser = AddInputDevice(DarwinTabletProc, TRUE);
+    darwinTabletEraser = AddInputDevice(serverClient, DarwinTabletProc, TRUE);
     RegisterPointerDevice( darwinTabletEraser );
     darwinTabletEraser->name = strdup("eraser");
 
@@ -582,7 +586,6 @@ DarwinAdjustScreenOrigins(ScreenInfo *pScreenInfo)
 void InitOutput( ScreenInfo *pScreenInfo, int argc, char **argv )
 {
     int i;
-    static unsigned long generation = 0;
 
     pScreenInfo->imageByteOrder = IMAGE_BYTE_ORDER;
     pScreenInfo->bitmapScanlineUnit = BITMAP_SCANLINE_UNIT;
@@ -593,12 +596,6 @@ void InitOutput( ScreenInfo *pScreenInfo, int argc, char **argv )
     pScreenInfo->numPixmapFormats = NUMFORMATS;
     for (i = 0; i < NUMFORMATS; i++)
         pScreenInfo->formats[i] = formats[i];
-
-    // Allocate private storage for each screen's Darwin specific info
-    if (generation != serverGeneration) {
-        darwinScreenIndex = AllocateScreenPrivateIndex();
-        generation = serverGeneration;
-    }
 
 #ifdef GLXEXT
     setVisualConfigs();    
@@ -648,15 +645,6 @@ void OsVendorInit(void)
 	}
 #endif
     }
-}
-
-
-/*
- * ddxInitGlobals
- *  Called by InitGlobals() from os/util.c.
- */
-void ddxInitGlobals(void)
-{
 }
 
 
@@ -865,9 +853,6 @@ xf86SetRootClip (ScreenPtr pScreen, int enable)
     Bool	WasViewable = (Bool)(pWin->viewable);
     Bool	anyMarked = TRUE;
     RegionPtr	pOldClip = NULL, bsExposed;
-#ifdef DO_SAVE_UNDERS
-    Bool	dosave = FALSE;
-#endif
     WindowPtr   pLayerWin;
     BoxRec	box;
 
@@ -938,12 +923,6 @@ xf86SetRootClip (ScreenPtr pScreen, int enable)
 	    anyMarked = TRUE;
 	}
 
-#ifdef DO_SAVE_UNDERS
-	if (DO_SAVE_UNDERS(pWin))
-	{
-	    dosave = (*pScreen->ChangeSaveUnder)(pLayerWin, pLayerWin);
-	}
-#endif /* DO_SAVE_UNDERS */
 
 	if (anyMarked)
 	    (*pScreen->ValidateTree)(pWin, NullWindow, VTOther);
@@ -975,10 +954,6 @@ xf86SetRootClip (ScreenPtr pScreen, int enable)
     {
 	if (anyMarked)
 	    (*pScreen->HandleExposures)(pWin);
-#ifdef DO_SAVE_UNDERS
-	if (dosave)
-	    (*pScreen->PostChangeSaveUnder)(pLayerWin, pLayerWin);
-#endif /* DO_SAVE_UNDERS */
 	if (anyMarked && pScreen->PostValidateTree)
 	    (*pScreen->PostValidateTree)(pWin, NullWindow, VTOther);
     }

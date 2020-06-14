@@ -59,13 +59,13 @@ int DarwinParseModifierList(const char *constmodifiers, int separatelr);
 void DarwinAdjustScreenOrigins(ScreenInfo *pScreenInfo);
 void xf86SetRootClip (ScreenPtr pScreen, int enable);
 
-#define SCREEN_PRIV(pScreen) \
-    ((DarwinFramebufferPtr)pScreen->devPrivates[darwinScreenIndex].ptr)
+#define SCREEN_PRIV(pScreen) ((DarwinFramebufferPtr) \
+    dixLookupPrivate(&pScreen->devPrivates, darwinScreenKey))
 
 /*
  * Global variables from darwin.c
  */
-extern int              darwinScreenIndex; // index into pScreen.devPrivates
+extern DevPrivateKey    darwinScreenKey; // index into pScreen.devPrivates
 extern int              darwinScreensFound;
 extern io_connect_t     darwinParamConnect;
 extern int              darwinEventReadFD;
@@ -82,8 +82,8 @@ extern int              darwinMouseAccelChange;
 extern int              darwinFakeButtons;
 extern int              darwinFakeMouse2Mask;
 extern int              darwinFakeMouse3Mask;
-extern int              darwinAppKitModMask;
-extern int              windowItemModMask;
+extern unsigned int     darwinAppKitModMask;
+extern unsigned int     windowItemModMask;
 extern int              darwinSyncKeymap;
 extern unsigned int     darwinDesiredWidth, darwinDesiredHeight;
 extern int              darwinDesiredDepth;

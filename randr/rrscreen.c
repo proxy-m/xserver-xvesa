@@ -22,9 +22,7 @@
 
 #include "randrstr.h"
 
-extern char	*ConnectionInfo;
-
-static int padlength[4] = {0, 3, 2, 1};
+static const int padlength[4] = {0, 3, 2, 1};
 
 static CARD16
 RR10CurrentSizeID (ScreenPtr pScreen);
@@ -599,7 +597,7 @@ ProcRRGetScreenInfo (ClientPtr client)
     if (!pScrPriv || !output)
     {
 	rep.type = X_Reply;
-	rep.setOfRotations = RR_Rotate_0;;
+	rep.setOfRotations = RR_Rotate_0;
 	rep.sequenceNumber = client->sequence;
 	rep.length = 0;
 	rep.root = WindowTable[pWin->drawable.pScreen->myNum]->drawable.id;
@@ -731,7 +729,6 @@ ProcRRSetScreenConfig (ClientPtr client)
     int			    n, rc;
     ScreenPtr		    pScreen;
     rrScrPrivPtr	    pScrPriv;
-    TimeStamp		    configTime;
     TimeStamp		    time;
     int			    i;
     Rotation		    rotation;

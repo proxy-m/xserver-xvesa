@@ -84,7 +84,7 @@ static pthread_mutex_t fd_add_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fd_add_ready_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t fd_add_tid = NULL;
 
-static xEvent *darwinEvents = NULL;
+static EventList *darwinEvents = NULL;
 
 static pthread_mutex_t mieq_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t mieq_ready_cond = PTHREAD_COND_INITIALIZER;
@@ -116,8 +116,7 @@ void darwinEvents_lock(void) {
     }
 }
 
-void darwinEvents_unlock(void);
-void darwinEvents_unlock(void) {
+static inline void darwinEvents_unlock(void) {
     int err;
     if((err = pthread_mutex_unlock(&mieq_lock))) {
         ErrorF("%s:%s:%d: Failed to unlock mieq_lock: %d\n",
@@ -187,7 +186,7 @@ static void DarwinEventHandler(int screenNum, xEventPtr xe, DeviceIntPtr dev, in
     
     TA_SERVER();
 
-    DEBUG_LOG("DarwinEventHandler(%d, %p, %p, %d)\n", screenNum, xe, dev, nevents);
+//    DEBUG_LOG("DarwinEventHandler(%d, %p, %p, %d)\n", screenNum, xe, dev, nevents);
     for (i=0; i<nevents; i++) {
         switch(xe[i].u.u.type) {
             case kXquartzControllerNotify:
@@ -267,16 +266,9 @@ static void DarwinEventHandler(int screenNum, xEventPtr xe, DeviceIntPtr dev, in
     }
 }
 
-#ifdef XQUARTZ_EXPORTS_LAUNCHD_FD
-int xquartz_launchd_fd = -1;
-#endif
-
 void DarwinListenOnOpenFD(int fd) {
     ErrorF("DarwinListenOnOpenFD: %d\n", fd);
     
-#ifdef XQUARTZ_EXPORTS_LAUNCHD_FD
-    xquartz_launchd_fd = fd;
-#else
     pthread_mutex_lock(&fd_add_lock);
     if(fd_add_count < FD_ADD_MAX)
         fd_add[fd_add_count++] = fd;
@@ -285,7 +277,6 @@ void DarwinListenOnOpenFD(int fd) {
 
     pthread_cond_broadcast(&fd_add_ready_cond);
     pthread_mutex_unlock(&fd_add_lock);
-#endif
 }
 
 static void DarwinProcessFDAdditionQueue_thread(void *args) {
@@ -333,7 +324,7 @@ Bool DarwinEQInit(void) {
      * here, so I don't bother.
      */
     if (!darwinEvents) {
-        darwinEvents = (xEvent *)xcalloc(sizeof(xEvent), GetMaximumEventsNum());
+        darwinEvents = InitEventList(GetMaximumEventsNum());;
         
         if (!darwinEvents)
             FatalError("Couldn't allocate event buffer\n");
@@ -385,7 +376,13 @@ static void DarwinPrepareValuators(int *valuators, ScreenPtr screen,
     /* Fix offset between darwin and X screens */
     pointer_x -= darwinMainScreenX + dixScreenOrigins[screen->myNum].x;
     pointer_y -= darwinMainScreenY + dixScreenOrigins[screen->myNum].y;
-    
+
+    if(pointer_x < 0.0)
+        pointer_x = 0.0;
+
+    if(pointer_y < 0.0)
+        pointer_y = 0.0;
+
     /* Setup our array of values */
     valuators[0] = pointer_x * XQUARTZ_VALUATOR_LIMIT / (float)screenInfo.screens[0]->width;
     valuators[1] = pointer_y * XQUARTZ_VALUATOR_LIMIT / (float)screenInfo.screens[0]->height;
@@ -393,8 +390,8 @@ static void DarwinPrepareValuators(int *valuators, ScreenPtr screen,
     valuators[3] = tilt_x * XQUARTZ_VALUATOR_LIMIT;
     valuators[4] = tilt_y * XQUARTZ_VALUATOR_LIMIT;
     
-    DEBUG_LOG("Valuators: {%d,%d,%d,%d,%d}\n", 
-              valuators[0], valuators[1], valuators[2], valuators[3], valuators[4]);
+    //DEBUG_LOG("Pointer (%f, %f), Valuators: {%d,%d,%d,%d,%d}\n", pointer_x, pointer_y,
+    //          valuators[0], valuators[1], valuators[2], valuators[3], valuators[4]);
 }
 
 void DarwinSendPointerEvents(DeviceIntPtr pDev, int ev_type, int ev_button, float pointer_x, float pointer_y, 
@@ -404,7 +401,7 @@ void DarwinSendPointerEvents(DeviceIntPtr pDev, int ev_type, int ev_button, floa
     ScreenPtr screen;
     int valuators[5];
 	
-    DEBUG_LOG("x=%f, y=%f, p=%f, tx=%f, ty=%f\n", pointer_x, pointer_y, pressure, tilt_x, tilt_y);
+    //DEBUG_LOG("x=%f, y=%f, p=%f, tx=%f, ty=%f\n", pointer_x, pointer_y, pressure, tilt_x, tilt_y);
     
 	if(!darwinEvents) {
 		DEBUG_LOG("DarwinSendPointerEvents called before darwinEvents was initialized\n");
@@ -453,7 +450,7 @@ void DarwinSendPointerEvents(DeviceIntPtr pDev, int ev_type, int ev_button, floa
     darwinEvents_lock(); {
         num_events = GetPointerEvents(darwinEvents, pDev, ev_type, ev_button, 
                                       POINTER_ABSOLUTE, 0, pDev==darwinTabletCurrent?5:2, valuators);
-        for(i=0; i<num_events; i++) mieqEnqueue (pDev, &darwinEvents[i]);
+        for(i=0; i<num_events; i++) mieqEnqueue (pDev, darwinEvents[i].event);
         DarwinPokeEQ();
     } darwinEvents_unlock();
 }
@@ -468,7 +465,7 @@ void DarwinSendKeyboardEvents(int ev_type, int keycode) {
 
     darwinEvents_lock(); {
         num_events = GetKeyboardEvents(darwinEvents, darwinKeyboard, ev_type, keycode + MIN_KEYCODE);
-        for(i=0; i<num_events; i++) mieqEnqueue(darwinKeyboard,&darwinEvents[i]);
+        for(i=0; i<num_events; i++) mieqEnqueue(darwinKeyboard,darwinEvents[i].event);
         DarwinPokeEQ();
     } darwinEvents_unlock();
 }
@@ -496,7 +493,7 @@ void DarwinSendProximityEvents(int ev_type, float pointer_x, float pointer_y) {
     darwinEvents_lock(); {
         num_events = GetProximityEvents(darwinEvents, dev, ev_type,
                                         0, 5, valuators);
-        for(i=0; i<num_events; i++) mieqEnqueue (dev,&darwinEvents[i]);
+        for(i=0; i<num_events; i++) mieqEnqueue (dev,darwinEvents[i].event);
         DarwinPokeEQ();
     } darwinEvents_unlock();
 }

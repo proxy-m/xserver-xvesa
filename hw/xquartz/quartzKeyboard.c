@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <available.h>
 
 #include "quartzCommon.h"
 #include "darwin.h"
@@ -431,7 +432,7 @@ static void DarwinKeyboardSetDeviceKeyMap(KeySymsRec *keySyms) {
     DeviceIntPtr pDev;
 
     /* From ProcSetModifierMapping */
-    SendMappingNotify(MappingModifier, 0, 0, serverClient);
+    SendMappingNotify(darwinKeyboard, MappingModifier, 0, 0, serverClient);
     for (pDev = inputInfo.devices; pDev; pDev = pDev->next)
         if (pDev->key && pDev->coreEvents)
             SendDeviceMappingNotify(serverClient, MappingModifier, 0, 0, pDev);
@@ -441,7 +442,7 @@ static void DarwinKeyboardSetDeviceKeyMap(KeySymsRec *keySyms) {
         if ((pDev->coreEvents || pDev == inputInfo.keyboard) && pDev->key)
             assert(SetKeySymsMap(&pDev->key->curKeySyms, keySyms));
 
-    SendMappingNotify(MappingKeyboard, keySyms->minKeyCode,
+    SendMappingNotify(darwinKeyboard, MappingKeyboard, keySyms->minKeyCode,
                       keySyms->maxKeyCode - keySyms->minKeyCode + 1, serverClient);
     for (pDev = inputInfo.devices; pDev; pDev = pDev->next)
         if (pDev->key && pDev->coreEvents)
@@ -476,7 +477,8 @@ void DarwinKeyboardInit(DeviceIntPtr pDev) {
                                        QuartzBell, DarwinChangeKeyboardControl));
     pthread_mutex_unlock(&keyInfo_mutex);
 
-	SwitchCoreKeyboard(pDev);   
+    // TODO: What do we do now in 1.6?
+	//SwitchCoreKeyboard(pDev);   
 
     DarwinKeyboardSetDeviceKeyMap(&keySyms);
 }
@@ -701,17 +703,19 @@ static KeySym make_dead_key(KeySym in) {
 }
 
 Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
-#if !defined(__x86_64__) && !defined(__ppc64__)
+#if !defined(__LP64__) || MAC_OS_X_VERSION_MIN_REQUIRED < 1050
     KeyboardLayoutRef key_layout;
+    int is_uchr = 1;
 #endif
     const void *chr_data = NULL;
     int num_keycodes = NUM_KEYCODES;
     UInt32 keyboard_type = 0;
-    int is_uchr = 1, i, j;
+    int i, j;
     OSStatus err;
     KeySym *k;
     CFDataRef currentKeyLayoutDataRef = NULL;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
     TISInputSourceRef currentKeyLayoutRef = TISCopyCurrentKeyboardLayoutInputSource();
     keyboard_type = LMGetKbdType();
 
@@ -720,13 +724,15 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
       if (currentKeyLayoutDataRef)
           chr_data = CFDataGetBytePtr(currentKeyLayoutDataRef);
     }
+#endif
 
-#if !defined(__x86_64__) && !defined(__ppc64__)
+#if !defined(__LP64__) || MAC_OS_X_VERSION_MIN_REQUIRED < 1050
     if (chr_data == NULL) {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
         ErrorF("X11.app: Error detected in determining keyboard layout.  If you are using an Apple-provided keyboard layout, please report this error at http://xquartz.macosforge.org and http://bugreport.apple.com\n");
         ErrorF("X11.app: Debug Info: keyboard_type=%u, currentKeyLayoutRef=%p, currentKeyLayoutDataRef=%p, chr_data=%p\n",
                (unsigned)keyboard_type, currentKeyLayoutRef, currentKeyLayoutDataRef, chr_data);
-
+#endif
         KLGetCurrentKeyboardLayout (&key_layout);
         KLGetKeyboardLayoutProperty (key_layout, kKLuchrData, &chr_data);
 
@@ -748,6 +754,11 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
     }
 #endif
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+    if(currentKeyLayoutRef)
+        CFRelease(currentKeyLayoutRef);
+#endif
+    
     if (chr_data == NULL) {
       ErrorF ( "Couldn't get uchr or kchr resource\n");
       return FALSE;
@@ -757,6 +768,9 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
        key produces in the four shift states. Then convert that to
        an X11 keysym (which may just the bit that says "this is
        Unicode" if it can't find the real symbol.) */
+       
+    /* KeyTranslate is not available on 64-bit platforms; UCKeyTranslate
+       must be used instead. */
 
     for (i = 0; i < num_keycodes; i++) {
         static const int mods[4] = {0, MOD_SHIFT, MOD_OPTION,
@@ -765,7 +779,9 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
         k = info->keyMap + i * GLYPHS_PER_KEY;
 
         for (j = 0; j < 4; j++) {
+#if !defined(__LP64__) || MAC_OS_X_VERSION_MIN_REQUIRED < 1050
             if (is_uchr)  {
+#endif
                 UniChar s[8];
                 UniCharCount len;
                 UInt32 dead_key_state = 0, extra_dead = 0;
@@ -789,6 +805,7 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
                     k[j] = ucs2keysym (s[0]);
                     if (dead_key_state != 0) k[j] = make_dead_key (k[j]);
                 }
+#if !defined(__LP64__) || MAC_OS_X_VERSION_MIN_REQUIRED < 1050
             } else { // kchr
 	      UInt32 c, state = 0, state2 = 0;
                 UInt16 code;
@@ -812,6 +829,7 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
                     if (state != 0) k[j] = make_dead_key (k[j]);
                 }
             }
+#endif
         }
 	
         if (k[3] == k[2]) k[3] = NoSymbol;
@@ -844,7 +862,6 @@ Bool QuartzReadSystemKeymap(darwinKeyboardInfo *info) {
                 k[0] = known_numeric_keys[i].keypad;
         }
     }
-    if(currentKeyLayoutRef)	CFRelease(currentKeyLayoutRef);
-    
+
     return TRUE;
 }

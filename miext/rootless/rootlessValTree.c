@@ -109,8 +109,6 @@ int RootlessShapedWindowIn (ScreenPtr pScreen, RegionPtr universe,
 
 int RootlessMiValidateTree (WindowPtr pRoot, WindowPtr pChild, VTKind kind);
 
-
-#ifdef SHAPE
 /*
  * Compute the visibility of a shaped window
  */
@@ -170,7 +168,6 @@ RootlessShapedWindowIn (ScreenPtr pScreen, RegionPtr universe,
 	return rgnIN;
     return rgnOUT;
 }
-#endif
 
 #define HasParentRelativeBorder(w) (!(w)->borderIsPixel && \
 				    HasBorder(w) && \
@@ -234,7 +231,6 @@ RootlessComputeClips (WindowPtr pParent, ScreenPtr pScreen,
 	    break;
 	case rgnPART:
 	    newVis = VisibilityPartiallyObscured;
-#ifdef SHAPE
 	    {
 		RegionPtr   pBounding;
 
@@ -254,7 +250,6 @@ RootlessComputeClips (WindowPtr pParent, ScreenPtr pScreen,
 		    }
 		}
 	    }
-#endif
 	    break;
 	default:
 	    newVis = VisibilityFullyObscured;

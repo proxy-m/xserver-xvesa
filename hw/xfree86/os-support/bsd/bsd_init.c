@@ -159,7 +159,9 @@ xf86OpenConsole()
     xf86ConsOpen_t *driver;
 #if defined (SYSCONS_SUPPORT) || defined (PCVT_SUPPORT)
     int result;
+#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
     struct utsname uts;
+#endif
     vtmode_t vtmode;
 #endif
     
@@ -250,6 +252,7 @@ xf86OpenConsole()
 #endif
 	    /* otherwise fall through */
 	case PCVT:
+#if !(defined(__NetBSD__) && (__NetBSD_Version__ >= 200000000))
 	    /*
 	     * First activate the #1 VT.  This is a hack to allow a server
 	     * to be started while another one is active.  There should be
@@ -264,7 +267,7 @@ xf86OpenConsole()
 		}
 		sleep(1);
 	    }
-
+#endif
 acquire_vt:
 	    /*
 	     * now get the VT
@@ -307,8 +310,7 @@ acquire_vt:
 #endif /* SYSCONS_SUPPORT || PCVT_SUPPORT */
 #ifdef WSCONS_SUPPORT
 	case WSCONS:
-	    fprintf(stderr, "xf86OpenConsole\n");
-	    /* xf86Info.consoleFd = open("/dev/wskbd0", 0); */
+	    /* Nothing to do */
    	    break; 
 #endif
         }
@@ -572,8 +574,14 @@ xf86OpenPcvt()
             sprintf(vtname, "%s%01x", vtprefix, xf86Info.vtno - 1);
 	    if ((fd = open(vtname, PCVT_CONSOLE_MODE, 0)) < 0)
 	    {
-		FatalError("xf86OpenPcvt: Cannot open %s (%s)",
+		ErrorF("xf86OpenPcvt: Cannot open %s (%s)",
 			   vtname, strerror(errno));
+		xf86Info.vtno = initialVT;
+	        sprintf(vtname, "%s%01x", vtprefix, xf86Info.vtno - 1);
+		if ((fd = open(vtname, PCVT_CONSOLE_MODE, 0)) < 0) {
+			FatalError("xf86OpenPcvt: Cannot open %s (%s)",
+			   	vtname, strerror(errno));
+		}
 	    }
 	    if (ioctl(fd, VT_GETMODE, &vtmode) < 0)
 	    {
@@ -582,8 +590,8 @@ xf86OpenPcvt()
 	    xf86Info.consType = PCVT;
 #ifdef WSCONS_SUPPORT
 	    xf86Msg(X_PROBED,
-		    "Using wscons driver in pcvt compatibility mode "
-		    "(version %d.%d)\n",
+		    "Using wscons driver on %s in pcvt compatibility mode "
+		    "(version %d.%d)\n", vtname,
 		    pcvt_version.rmajor, pcvt_version.rminor);
 #else
 	    xf86Msg(X_PROBED, "Using pcvt driver (version %d.%d)\n",
@@ -617,7 +625,7 @@ xf86OpenWScons()
 #if defined(__NetBSD__)
 	sprintf(ttyname, "/dev/ttyE%d", i);
 #elif defined(__OpenBSD__)
-	sprintf(ttyname, "/dev/ttyC%d", i);
+	sprintf(ttyname, "/dev/ttyC%x", i);
 #endif
 	if ((fd = open(ttyname, 2)) != -1)
 	    break;
@@ -659,7 +667,7 @@ xf86CloseConsole()
 	    VT.mode = VT_AUTO;
 	    ioctl(xf86Info.consoleFd, VT_SETMODE, &VT); /* dflt vt handling */
         }
-#if !defined(USE_DEV_IO) && !defined(USE_I386_IOPL)
+#if !defined(OpenBSD) && !defined(USE_DEV_IO) && !defined(USE_I386_IOPL)
         if (ioctl(xf86Info.consoleFd, KDDISABIO, 0) < 0)
         {
             xf86FatalError("xf86CloseConsole: KDDISABIO failed (%s)",

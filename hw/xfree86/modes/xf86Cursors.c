@@ -45,6 +45,7 @@
 #include "picturestr.h"
 #endif
 #include "cursorstr.h"
+#include "inputstr.h"
 
 /*
  * Given a screen coordinate, rotate back to a cursor source coordinate
@@ -227,7 +228,13 @@ xf86_set_cursor_colors (ScrnInfoPtr scrn, int bg, int fg)
     xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
     CursorPtr		cursor = xf86_config->cursor;
     int			c;
-    CARD8		*bits = cursor ? cursor->devPriv[screen->myNum] : NULL;
+    CARD8		*bits = cursor ?
+#if XORG_VERSION_CURRENT < XORG_VERSION_NUMERIC(7,0,0,0,0)
+        dixLookupPrivate(&cursor->devPrivates, CursorScreenKey(screen))
+#else
+        cursor->devPriv[screen->myNum]
+#endif
+      : NULL;
 
     /* Save ARGB versions of these colors */
     xf86_config->cursor_fg = (CARD32) fg | 0xff000000;
@@ -400,7 +407,7 @@ xf86_crtc_load_cursor_image (xf86CrtcPtr crtc, CARD8 *src)
 	int flags = cursor_info->Flags;
 	
 	cursor_image = xf86_config->cursor_image;
-	memset(cursor_image, 0, cursor_info->MaxWidth * stride);
+	memset(cursor_image, 0, cursor_info->MaxHeight * stride);
 	
         for (y = 0; y < cursor_info->MaxHeight; y++)
 	    for (x = 0; x < cursor_info->MaxWidth; x++) 
@@ -589,8 +596,10 @@ xf86_reload_cursors (ScreenPtr screen)
     CursorPtr		cursor;
     int			x, y;
     
-    /* initial mode setting will not have set a screen yet */
-    if (!screen)
+    /* initial mode setting will not have set a screen yet.
+       May be called before the devices are initialised.
+     */
+    if (!screen || !inputInfo.pointer)
 	return;
     scrn = xf86Screens[screen->myNum];
     xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -601,19 +610,23 @@ xf86_reload_cursors (ScreenPtr screen)
 	return;
     
     cursor = xf86_config->cursor;
-    GetSpritePosition (&x, &y);
+    GetSpritePosition (inputInfo.pointer, &x, &y);
     if (!(cursor_info->Flags & HARDWARE_CURSOR_UPDATE_UNHIDDEN))
 	(*cursor_info->HideCursor)(scrn);
 
     if (cursor)
     {
+#if XORG_VERSION_CURRENT < XORG_VERSION_NUMERIC(7,0,0,0,0)
+	void *src = dixLookupPrivate(&cursor->devPrivates, CursorScreenKey(screen));
+#else
+	void *src = cursor->devPriv[screen->myNum];
+#endif
 #ifdef ARGB_CURSOR
 	if (cursor->bits->argb && cursor_info->LoadCursorARGB)
 	    (*cursor_info->LoadCursorARGB) (scrn, cursor);
-	else
+	else if (src)
 #endif
-	    (*cursor_info->LoadCursorImage)(cursor_info->pScrn,
-					    cursor->devPriv[screen->myNum]);
+	    (*cursor_info->LoadCursorImage)(cursor_info->pScrn, src);
 
 	(*cursor_info->SetCursorPosition)(cursor_info->pScrn, x, y);
 	(*cursor_info->ShowCursor)(cursor_info->pScrn);

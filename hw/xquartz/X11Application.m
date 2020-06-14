@@ -47,8 +47,12 @@
 
 #include <mach/mach.h>
 #include <unistd.h>
+#include <available.h>
 
 #include <Xplugin.h>
+
+// pbproxy/pbproxy.h
+extern BOOL xpbproxy_init (void);
 
 #define DEFAULTS_FILE "/usr/X11/lib/X11/xserver/Xquartz.plist"
 
@@ -59,10 +63,14 @@
 #define ProximityIn    0
 #define ProximityOut   1
 
-int X11EnableKeyEquivalents = TRUE;
+int X11EnableKeyEquivalents = TRUE, quartzFullscreenMenu = FALSE;
 int quartzHasRoot = FALSE, quartzEnableRootless = TRUE;
 
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
 static TISInputSourceRef last_key_layout;
+#else
+static KeyboardLayoutRef last_key_layout;
+#endif
 
 extern int darwinFakeButtons;
 
@@ -221,6 +229,34 @@ static void message_kit_thread (SEL selector, NSObject *arg) {
                         [self activateX:YES];
                 }
             }
+
+            /* We want to force sending to appkit if we're over the menu bar */
+            if(!for_appkit) {
+                NSPoint NSlocation = [e locationInWindow];
+                NSWindow *window = [e window];
+                
+                if (window != nil)	{
+                    NSRect frame = [window frame];
+                    NSlocation.x += frame.origin.x;
+                    NSlocation.y += frame.origin.y;
+                }
+
+                NSRect NSframe = [[NSScreen mainScreen] frame];
+                NSRect NSvisibleFrame = [[NSScreen mainScreen] visibleFrame];
+                
+                CGRect CGframe = CGRectMake(NSframe.origin.x, NSframe.origin.y,
+                                            NSframe.size.width, NSframe.size.height);
+                CGRect CGvisibleFrame = CGRectMake(NSvisibleFrame.origin.x,
+                                                   NSvisibleFrame.origin.y,
+                                                   NSvisibleFrame.size.width,
+                                                   NSvisibleFrame.size.height);
+                CGPoint CGlocation = CGPointMake(NSlocation.x, NSlocation.y);
+                
+                if(CGRectContainsPoint(CGframe, CGlocation) &&
+                   !CGRectContainsPoint(CGvisibleFrame, CGlocation))
+                    for_appkit = YES;
+            }
+            
             break;
             
         case NSKeyDown: case NSKeyUp:
@@ -300,7 +336,7 @@ static void message_kit_thread (SEL selector, NSObject *arg) {
                         if(!ok)
                             switch_on_activate = YES;
                         
-                        if ([e data2] & 0x10 && switch_on_activate) // 0x10 is set when we use cmd-tab or the dock icon
+                        if ([e data2] & 0x10 && switch_on_activate)
                             DarwinSendDDXEvent(kXquartzBringAllToFront, 0);
                     }
                     break;
@@ -352,8 +388,11 @@ static void message_kit_thread (SEL selector, NSObject *arg) {
 }
 
 - (void) show_hide_menubar:(NSNumber *)state {
-	if ([state boolValue]) ShowMenuBar ();
-	else HideMenuBar ();
+    /* Also shows/hides the dock */
+    if ([state boolValue])
+        SetSystemUIMode(kUIModeNormal, 0); 
+    else
+        SetSystemUIMode(kUIModeAllHidden, quartzFullscreenMenu ? kUIOptionAutoShowMenuBar : 0); // kUIModeAllSuppressed or kUIOptionAutoShowMenuBar can be used to allow "mouse-activation"
 }
 
 
@@ -631,14 +670,15 @@ static NSMutableArray * cfarray_to_nsarray (CFArrayRef in) {
     const char *tem;
 	
     quartzUseSysBeep = [self prefs_get_boolean:@PREFS_SYSBEEP
-                        default:quartzUseSysBeep];
+                                       default:quartzUseSysBeep];
     quartzEnableRootless = [self prefs_get_boolean:@PREFS_ROOTLESS
-                        default:quartzEnableRootless];
+                                           default:quartzEnableRootless];
+    quartzFullscreenMenu = [self prefs_get_boolean:@PREFS_FULLSCREEN_MENU
+                                           default:quartzFullscreenMenu];
     quartzFullscreenDisableHotkeys = ![self prefs_get_boolean:
-					      @PREFS_FULLSCREEN_HOTKEYS default:
-					      !quartzFullscreenDisableHotkeys];
+                            @PREFS_FULLSCREEN_HOTKEYS default:!quartzFullscreenDisableHotkeys];
     darwinFakeButtons = [self prefs_get_boolean:@PREFS_FAKEBUTTONS
-                         default:darwinFakeButtons];
+                                        default:darwinFakeButtons];
     if (darwinFakeButtons) {
         const char *fake2, *fake3;
 
@@ -673,6 +713,7 @@ static NSMutableArray * cfarray_to_nsarray (CFArrayRef in) {
 		
     darwinDesiredDepth = [self prefs_get_integer:@PREFS_DEPTH
                           default:darwinDesiredDepth];
+	
 }
 
 /* This will end up at the end of the responder chain. */
@@ -833,11 +874,16 @@ void X11ApplicationMain (int argc, char **argv, char **envp) {
     NSMaxY([[NSScreen mainScreen] visibleFrame]);
 
     /* Set the key layout seed before we start the server */
-    last_key_layout = TISCopyCurrentKeyboardLayoutInputSource();
-    
-    if(!last_key_layout) {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+    last_key_layout = TISCopyCurrentKeyboardLayoutInputSource();    
+
+    if(!last_key_layout)
         fprintf(stderr, "X11ApplicationMain: Unable to determine TISCopyCurrentKeyboardLayoutInputSource() at startup.\n");
-    }
+#else
+    KLGetCurrentKeyboardLayout(&last_key_layout);
+    if(!last_key_layout)
+        fprintf(stderr, "X11ApplicationMain: Unable to determine KLGetCurrentKeyboardLayout() at startup.\n");
+#endif
 
     memset(keyInfo.keyMap, 0, sizeof(keyInfo.keyMap));
     if (!QuartzReadSystemKeymap(&keyInfo)) {
@@ -851,6 +897,9 @@ void X11ApplicationMain (int argc, char **argv, char **envp) {
      * an mieqEnqueue() - <rdar://problem/6300249>
      */
     check_xinitrc();
+    
+    if(!xpbproxy_init())
+        fprintf(stderr, "Error initializing xpbproxy\n");
            
     [NSApp run];
     /* not reached */
@@ -860,32 +909,32 @@ void X11ApplicationMain (int argc, char **argv, char **envp) {
 extern int darwin_modifier_flags; // darwinEvents.c
 
 - (void) sendX11NSEvent:(NSEvent *)e {
-	NSRect screen;
-	NSPoint location;
-	NSWindow *window;
-	int ev_button, ev_type;
-	float pointer_x, pointer_y, pressure, tilt_x, tilt_y;
+    NSRect screen;
+    NSPoint location;
+    NSWindow *window;
+    int ev_button, ev_type;
+    float pointer_x, pointer_y, pressure, tilt_x, tilt_y;
     DeviceIntPtr pDev;
-    
-	/* convert location to be relative to top-left of primary display */
-	location = [e locationInWindow];
-	window = [e window];
-	screen = [[[NSScreen screens] objectAtIndex:0] frame];
-    
+
+    /* convert location to be relative to top-left of primary display */
+    location = [e locationInWindow];
+    window = [e window];
+    screen = [[[NSScreen screens] objectAtIndex:0] frame];
+
     if (window != nil)	{
-		NSRect frame = [window frame];
-		pointer_x = location.x + frame.origin.x;
-		pointer_y = (((screen.origin.y + screen.size.height)
-                      - location.y) - frame.origin.y);
-	} else {
-		pointer_x = location.x;
-		pointer_y = (screen.origin.y + screen.size.height) - location.y;
-	}
-    
+        NSRect frame = [window frame];
+        pointer_x = location.x + frame.origin.x;
+        pointer_y = (screen.origin.y + screen.size.height)
+                    - (location.y + frame.origin.y);
+    } else {
+        pointer_x = location.x;
+        pointer_y = (screen.origin.y + screen.size.height) - location.y;
+    }
+
     /* Setup our valuators.  These will range from 0 to 1 */
-	pressure = 0;
-	tilt_x = 0;
-	tilt_y = 0;
+    pressure = 0;
+    tilt_x = 0;
+    tilt_y = 0;
     
     /* We don't receive modifier key events while out of focus, and 3button
      * emulation mucks this up, so we need to check our modifier flag state
@@ -950,17 +999,17 @@ extern int darwin_modifier_flags; // darwinEvents.c
 
             if(!quartzServerVisible) {
                 xp_window_id wid;
-                
+
                 /* Sigh. Need to check that we're really over one of
                  * our windows. (We need to receive pointer events while
-                 * not in the foreground, and the only way to do that
-                 * right now is to ask for _all_ pointer events..)
+                 * not in the foreground, but we don't want to receive them
+                 * when another window is over us or we might show a tooltip)
                  */
                 
                 wid = 0;
-                xp_find_window(pointer_x, pointer_y, 0, &wid);
                 
-                if (wid == 0)
+                if (xp_find_window(pointer_x, pointer_y, 0, &wid) == XP_Success &&
+                    wid == 0)
                     return;        
             }
             
@@ -995,6 +1044,7 @@ extern int darwin_modifier_flags; // darwinEvents.c
             
         case NSKeyDown: case NSKeyUp:
             if(darwinSyncKeymap) {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
                 TISInputSourceRef key_layout = TISCopyCurrentKeyboardLayoutInputSource();
                 TISInputSourceRef clear;
                 if (CFEqual(key_layout, last_key_layout)) {
@@ -1004,6 +1054,12 @@ extern int darwin_modifier_flags; // darwinEvents.c
                     clear = last_key_layout;
                     last_key_layout = key_layout;
                     CFRelease(clear);
+#else
+                KeyboardLayoutRef key_layout;
+                KLGetCurrentKeyboardLayout(&key_layout);
+                if(key_layout != last_key_layout) {
+                    last_key_layout = key_layout;
+#endif
 
                     /* Update keyInfo */
                     pthread_mutex_lock(&keyInfo_mutex);

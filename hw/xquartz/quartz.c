@@ -73,7 +73,8 @@ int                     quartzUseAGL = 1;
 int                     quartzEnableKeyEquivalents = 1;
 int                     quartzServerVisible = FALSE;
 int                     quartzServerQuitting = FALSE;
-int                     quartzScreenIndex = 0;
+static int              quartzScreenKeyIndex;
+DevPrivateKey           quartzScreenKey = &quartzScreenKeyIndex;
 int                     aquaMenuBarHeight = 0;
 QuartzModeProcsPtr      quartzProcs = NULL;
 const char             *quartzOpenGLBundle = NULL;
@@ -123,7 +124,7 @@ Bool QuartzAddScreen(
     QuartzScreenPtr displayInfo = xcalloc(sizeof(QuartzScreenRec), 1);
 
     // QUARTZ_PRIV(pScreen) = displayInfo;
-    pScreen->devPrivates[quartzScreenIndex].ptr = displayInfo;
+    dixSetPrivate(&pScreen->devPrivates, quartzScreenKey, displayInfo);
 
     // do Quartz mode specific initialization
     return quartzProcs->AddScreen(index, pScreen);
@@ -158,14 +159,6 @@ void QuartzInitOutput(
     int argc,
     char **argv )
 {
-    static unsigned long generation = 0;
-
-    // Allocate private storage for each screen's Quartz specific info
-    if (generation != serverGeneration) {
-        quartzScreenIndex = AllocateScreenPrivateIndex();
-        generation = serverGeneration;
-    }
-
     if (!RegisterBlockAndWakeupHandlers(QuartzBlockHandler,
                                         QuartzWakeupHandler,
                                         NULL))
@@ -195,9 +188,8 @@ void QuartzInitInput(
 
 
 #ifdef FAKE_RANDR
-extern char	*ConnectionInfo;
 
-static int padlength[4] = {0, 3, 2, 1};
+static const int padlength[4] = {0, 3, 2, 1};
 
 static void
 RREditConnectionInfo (ScreenPtr pScreen)
@@ -282,9 +274,12 @@ static void QuartzUpdateScreens(void) {
     pRoot = WindowTable[pScreen->myNum];
     AppleWMSetScreenOrigin(pRoot);
     pScreen->ResizeWindow(pRoot, x - sx, y - sy, width, height, NULL);
+    //pScreen->PaintWindowBackground (pRoot, &pRoot->borderClip,  PW_BACKGROUND);
     miPaintWindow(pRoot, &pRoot->borderClip,  PW_BACKGROUND);
     DefineInitialRootWindow(pRoot);
-    
+
+    DEBUG_LOG("Root Window: %dx%d @ (%d, %d) darwinMainScreen (%d, %d) xy (%d, %d) dixScreenOrigins (%d, %d)\n", width, height, x - sx, y - sy, darwinMainScreenX, darwinMainScreenY, x, y, dixScreenOrigins[pScreen->myNum].x, dixScreenOrigins[pScreen->myNum].y);
+
     /* Send an event for the root reconfigure */
     e.u.u.type = ConfigureNotify;
     e.u.configureNotify.window = pRoot->drawable.id;
@@ -311,6 +306,9 @@ void QuartzDisplayChangedHandler(int screenNum, xEventPtr xe, DeviceIntPtr dev, 
 }
 
 void QuartzSetFullscreen(Bool state) {
+    
+    DEBUG_LOG("QuartzSetFullscreen: state=%d\n", state);
+    
     if(quartzHasRoot == state)
         return;
     

@@ -29,7 +29,7 @@
 #include "xf86.h"
 #include "xf86Priv.h"
 #include "xf86_OSlib.h"
-#if defined(__i386) || defined(__x86)
+#ifdef HAVE_SYS_KD_H
 # include <sys/kd.h>
 #endif
 
@@ -40,7 +40,7 @@ static int VTnum = -1;
 static int xf86StartVT = -1;
 #endif
 
-#if defined(__SOL8__) || !defined(__i386)
+#if defined(__SOL8__) || (!defined(__i386__) && !defined(__i386))
 static char fb_dev[PATH_MAX] = "/dev/fb";
 #else
 static char fb_dev[PATH_MAX] = "/dev/console";
@@ -209,11 +209,8 @@ xf86CloseConsole(void)
 #ifdef HAS_USL_VTS
     struct vt_mode VT;
 #endif
-#if defined(__SOL8__) || !defined(i386)
-    int tmp;
-#endif
 
-#if !defined(i386) && !defined(__x86)
+#if !defined(__i386__) && !defined(__i386) && !defined(__x86)
 
     if (!xf86DoProbe && !xf86DoConfigure) {
 	int fd;
@@ -247,8 +244,8 @@ xf86CloseConsole(void)
 			    "xf86CloseConsole():  unable to mmap framebuffer"
 			    " (%s)\n", strerror(errno));
 		} else {
-		    (void)memset(fbdata, 0, fbattr.fbtype.fb_size);
-		    (void)munmap(fbdata, fbattr.fbtype.fb_size);
+		    memset(fbdata, 0, fbattr.fbtype.fb_size);
+		    munmap(fbdata, fbattr.fbtype.fb_size);
 		}
 	    }
 
@@ -332,8 +329,6 @@ xf86ProcessArgument(int argc, char **argv, int i)
 
 #endif /* HAS_USL_VTS */
 
-#if defined(__SOL8__) || !defined(i386)
-
     if ((i + 1) < argc) {
 	if (!strcmp(argv[i], "-dev")) {
 	    strncpy(fb_dev, argv[i+1], PATH_MAX);
@@ -341,8 +336,6 @@ xf86ProcessArgument(int argc, char **argv, int i)
 	    return 2;
 	}
     }
-
-#endif
 
     return 0;
 }
@@ -352,9 +345,7 @@ void xf86UseMsg()
 #ifdef HAS_USL_VTS
     ErrorF("vtXX                   Use the specified VT number\n");
 #endif
-#if defined(__SOL8__) || !defined(i386)
     ErrorF("-dev <fb>              Framebuffer device\n");
-#endif
     ErrorF("-keeptty               Don't detach controlling tty\n");
     ErrorF("                       (for debugging only)\n");
 }

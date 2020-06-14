@@ -75,19 +75,9 @@ extern int iopl(int __level);
 
 #ifdef __alpha__
 
-# ifdef LIBC_IS_FIXED
 extern void sethae(unsigned long hae);
-# else
-#  include <unistd.h>
-#  define sethae(x) syscall(301,x);
-# endif
 
-/* define to test the Sparse addressing on a non-Jensen */
-# ifdef TEST_JENSEN_CODE 
-#  define isJensen (1)
-# else
 #  define isJensen (axpSystem == JENSEN)
-# endif
 
 # define BUS_BASE bus_base
 
@@ -142,17 +132,8 @@ mtrr_open(int verbosity)
 	/* Only report absence of /proc/mtrr once. */
 	static Bool warned = FALSE;
 
-	char **fn;
-	static char *mtrr_files[] = {
-		"/dev/cpu/mtrr",	/* Possible future name */
-		"/proc/mtrr",		/* Current name */
-		NULL
-	};
-
 	if (mtrr_fd == MTRR_FD_UNOPENED) { 
-		/* So open it. */
-		for (fn = mtrr_files; mtrr_fd < 0 && *fn; fn++)
-			mtrr_fd = open(*fn, O_WRONLY);
+		mtrr_fd = open("/proc/mtrr", O_WRONLY);
 
 		if (mtrr_fd < 0)
 			mtrr_fd = MTRR_FD_PROBLEM;
@@ -411,7 +392,7 @@ xf86OSInitVidMem(VidMemInfoPtr pVidMem)
 # ifndef JENSEN_SUPPORT
 	  FatalError("Jensen is not supported any more\n"
 		     "If you are intereseted in fixing Jensen support\n"
-		     "please contact xfree86@xfree86.org\n");
+		     "please contact xorg@lists.freedesktop.org\n");
 # else
 	  xf86Msg(X_INFO,"Machine type is Jensen\n");
 	  pVidMem->mapMem = mapVidMemJensen;
@@ -567,7 +548,7 @@ xf86EnableIO(void)
 #endif
 	}
 	close(fd);
-#elif !defined(__mc68000__) && !defined(__sparc__) && !defined(__mips__) && !defined(__sh__) && !defined(__hppa__) && !defined(__s390__) && !defined(__arm__)
+#elif !defined(__mc68000__) && !defined(__sparc__) && !defined(__mips__) && !defined(__sh__) && !defined(__hppa__) && !defined(__s390__) && !defined(__arm__) && !defined(__m32r__)
         if (ioperm(0, 1024, 1) || iopl(3)) {
                 if (errno == ENODEV)
                         ErrorF("xf86EnableIOPorts: no I/O ports found\n");
@@ -594,7 +575,7 @@ xf86DisableIO(void)
 #if defined(__powerpc__)
 	munmap(ioBase, 0x20000);
 	ioBase = NULL;
-#elif !defined(__mc68000__) && !defined(__sparc__) && !defined(__mips__) && !defined(__sh__) && !defined(__hppa__) && !defined(__arm__) && !defined(__s390__)
+#elif !defined(__mc68000__) && !defined(__sparc__) && !defined(__mips__) && !defined(__sh__) && !defined(__hppa__) && !defined(__arm__) && !defined(__s390__) && !defined(__m32r__)
 	iopl(0);
 	ioperm(0, 1024, 0);
 #endif

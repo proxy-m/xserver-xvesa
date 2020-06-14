@@ -81,37 +81,13 @@ SOFTWARE.
 #include <stdlib.h>
 
 #ifndef WIN32
-#if defined(Lynx)
-#include <socket.h>
-#else
 #include <sys/socket.h>
-#endif
-
-#ifdef hpux
-#include <sys/utsname.h>
-#include <sys/ioctl.h>
-#endif
-
-#if defined(DGUX)
-#include <sys/ioctl.h>
-#include <sys/utsname.h>
-#include <sys/socket.h>
-#include <sys/uio.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <sys/param.h>
-#include <unistd.h>
-#endif
 
 
-#ifdef AIXV3
-#include <sys/ioctl.h>
-#endif
 
 #if defined(TCPCONN) || defined(STREAMSCONN)
 # include <netinet/in.h>
 # include <arpa/inet.h>
-# if !defined(hpux)
 #  ifdef apollo
 #   ifndef NO_TCP_H
 #    include <netinet/tcp.h>
@@ -122,34 +98,20 @@ SOFTWARE.
 #   endif
 #   include <netinet/tcp.h>
 #  endif
-# endif
 # include <arpa/inet.h>
 #endif
 
-#ifndef Lynx
 #include <sys/uio.h>
-#else
-#include <uio.h>
-#endif
+
 #endif /* WIN32 */
 #include "misc.h"		/* for typedef of pointer */
 #include "osdep.h"
 #include <X11/Xpoll.h>
 #include "opaque.h"
 #include "dixstruct.h"
-#ifdef XAPPGROUP
-#include "appgroup.h"
-#endif
 #include "xace.h"
-#ifdef XCSECURITY
-#include "securitysrv.h"
-#endif
 
-#ifdef X_NOT_POSIX
-#define Pid_t int
-#else
 #define Pid_t pid_t
-#endif
 
 #ifdef DNETCONN
 #include <netdnet/dn.h>
@@ -361,6 +323,52 @@ InitConnectionLimits(void)
 #endif
 }
 
+/*
+ * If SIGUSR1 was set to SIG_IGN when the server started, assume that either
+ *
+ *  a- The parent process is ignoring SIGUSR1
+ *
+ * or
+ *
+ *  b- The parent process is expecting a SIGUSR1
+ *     when the server is ready to accept connections
+ *
+ * In the first case, the signal will be harmless, in the second case,
+ * the signal will be quite useful.
+ */
+static void
+InitParentProcess(void)
+{
+#if !defined(WIN32)
+    OsSigHandlerPtr handler;
+    handler = OsSignal (SIGUSR1, SIG_IGN);
+    if ( handler == SIG_IGN)
+	RunFromSmartParent = TRUE;
+    OsSignal(SIGUSR1, handler);
+    ParentProcess = getppid ();
+#ifdef __UNIXOS2__
+    /*
+     * fg030505: under OS/2, xinit is not the parent process but
+     * the "grant parent" process of the server because execvpe()
+     * presents us an additional process number;
+     * GetPPID(pid) is part of libemxfix
+     */
+    ParentProcess = GetPPID (ParentProcess);
+#endif /* __UNIXOS2__ */
+#endif
+}
+
+void
+NotifyParentProcess(void)
+{
+#if !defined(WIN32)
+    if (RunFromSmartParent) {
+	if (ParentProcess > 1) {
+	    kill (ParentProcess, SIGUSR1);
+	}
+    }
+#endif
+}
 
 /*****************
  * CreateWellKnownSockets
@@ -373,7 +381,6 @@ CreateWellKnownSockets(void)
     int		i;
     int		partial;
     char 	port[20];
-    OsSigHandlerPtr handler;
 
     FD_ZERO(&AllSockets);
     FD_ZERO(&AllClients);
@@ -427,33 +434,9 @@ CreateWellKnownSockets(void)
     OsSignal (SIGTERM, GiveUp);
     XFD_COPYSET (&WellKnownConnections, &AllSockets);
     ResetHosts(display);
-    /*
-     * Magic:  If SIGUSR1 was set to SIG_IGN when
-     * the server started, assume that either
-     *
-     *  a- The parent process is ignoring SIGUSR1
-     *
-     * or
-     *
-     *  b- The parent process is expecting a SIGUSR1
-     *     when the server is ready to accept connections
-     *
-     * In the first case, the signal will be harmless,
-     * in the second case, the signal will be quite
-     * useful
-     */
-#if !defined(WIN32)
-    handler = OsSignal (SIGUSR1, SIG_IGN);
-    if ( handler == SIG_IGN)
-	RunFromSmartParent = TRUE;
-    OsSignal(SIGUSR1, handler);
-    ParentProcess = getppid ();
-    if (RunFromSmartParent) {
-	if (ParentProcess > 1) {
-	    kill (ParentProcess, SIGUSR1);
-	}
-    }
-#endif
+
+    InitParentProcess();
+
 #ifdef XDMCP
     XdmcpInit ();
 #endif
@@ -503,16 +486,6 @@ ResetWellKnownSockets (void)
     ResetAuthorization ();
     ResetHosts(display);
     /*
-     * See above in CreateWellKnownSockets about SIGUSR1
-     */
-#if !defined(WIN32)
-    if (RunFromSmartParent) {
-	if (ParentProcess > 1) {
-	    kill (ParentProcess, SIGUSR1);
-	}
-    }
-#endif
-    /*
      * restart XDMCP
      */
 #ifdef XDMCP
@@ -536,12 +509,9 @@ AuthAudit (ClientPtr client, Bool letin,
 {
     char addr[128];
     char *out = addr;
-    int client_uid;
     char client_uid_string[64];
-#ifdef HAS_GETPEERUCRED
-    ucred_t *peercred = NULL;
-#endif
-#if defined(HAS_GETPEERUCRED) || defined(XSERVER_DTRACE)    
+    LocalClientCredRec *lcc;
+#ifdef XSERVER_DTRACE
     pid_t client_pid = -1;
     zoneid_t client_zid = -1;
 #endif
@@ -582,23 +552,50 @@ AuthAudit (ClientPtr client, Bool letin,
 	    strcpy(out, "unknown address");
 	}
 
-#ifdef HAS_GETPEERUCRED
-    if (getpeerucred(((OsCommPtr)client->osPrivate)->fd, &peercred) >= 0) {
-	client_uid = ucred_geteuid(peercred);
-	client_pid = ucred_getpid(peercred);
-	client_zid = ucred_getzoneid(peercred);
+    if (GetLocalClientCreds(client, &lcc) != -1) {
+	int slen; /* length written to client_uid_string */
 
-	ucred_free(peercred);
-	snprintf(client_uid_string, sizeof(client_uid_string),
-		 " (uid %ld, pid %ld, zone %ld)",
-		 (long) client_uid, (long) client_pid, (long) client_zid);
-    }
-#else    
-    if (LocalClientCred(client, &client_uid, NULL) != -1) {
-	snprintf(client_uid_string, sizeof(client_uid_string),
-		 " (uid %d)", client_uid);
-    }
+	strcpy(client_uid_string, " ( ");
+	slen = 3;
+
+	if (lcc->fieldsSet & LCC_UID_SET) {
+	    snprintf(client_uid_string + slen,
+		     sizeof(client_uid_string) - slen,
+		     "uid=%ld ", (long) lcc->euid);
+	    slen = strlen(client_uid_string);
+	}
+
+	if (lcc->fieldsSet & LCC_GID_SET) {
+	    snprintf(client_uid_string + slen,
+		     sizeof(client_uid_string) - slen,
+		     "gid=%ld ", (long) lcc->egid);
+	    slen = strlen(client_uid_string);
+	}
+
+	if (lcc->fieldsSet & LCC_PID_SET) {
+#ifdef XSERVER_DTRACE	    
+	    client_pid = lcc->pid;
 #endif
+	    snprintf(client_uid_string + slen,
+		     sizeof(client_uid_string) - slen,
+		     "pid=%ld ", (long) lcc->pid);
+	    slen = strlen(client_uid_string);
+	}
+	
+	if (lcc->fieldsSet & LCC_ZID_SET) {
+#ifdef XSERVER_DTRACE
+	    client_zid = lcc->zoneid;
+#endif	    
+	    snprintf(client_uid_string + slen,
+		     sizeof(client_uid_string) - slen,
+		     "zoneid=%ld ", (long) lcc->zoneid);
+	    slen = strlen(client_uid_string);
+	}
+
+	snprintf(client_uid_string + slen, sizeof(client_uid_string) - slen,
+		 ")");
+	FreeLocalClientCreds(lcc);
+    }
     else {
 	client_uid_string[0] = '\0';
     }
@@ -662,11 +659,10 @@ ClientAuthorized(ClientPtr client,
     XID	 		auth_id;
     char	 	*reason = NULL;
     XtransConnInfo	trans_conn;
-    struct sockaddr     *saddr;
+
     priv = (OsCommPtr)client->osPrivate;
     trans_conn = priv->trans_conn;
-    saddr = (struct sockaddr *) (trans_conn->addr);
-    
+
     /* Allow any client to connect without authorization on a launchd socket,
        because it is securely created -- this prevents a race condition on launch */
     if(trans_conn->flags & TRANS_NOXAUTH) {
@@ -677,13 +673,7 @@ ClientAuthorized(ClientPtr client,
 
     if (auth_id == (XID) ~0L)
     {
-	if (
-#ifdef XCSECURITY	    
-	    (proto_n == 0 ||
-	    strncmp (auth_proto, XSecurityAuthorizationName, proto_n) != 0) &&
-#endif
-	    _XSERVTransGetPeerAddr (trans_conn,
-	        &family, &fromlen, &from) != -1)
+	if (_XSERVTransGetPeerAddr(trans_conn, &family, &fromlen, &from) != -1)
 	{
 	    if (InvalidHost ((struct sockaddr *) from, fromlen, client))
 		AuthAudit(client, FALSE, (struct sockaddr *) from,
@@ -1108,11 +1098,15 @@ RemoveEnabledDevice(int fd)
  *    This routine is "undone" by ListenToAllClients()
  *****************/
 
-void
+int
 OnlyListenToOneClient(ClientPtr client)
 {
     OsCommPtr oc = (OsCommPtr)client->osPrivate;
-    int connection = oc->fd;
+    int rc, connection = oc->fd;
+
+    rc = XaceHook(XACE_SERVER_ACCESS, client, DixGrabAccess);
+    if (rc != Success)
+	return rc;
 
     if (! GrabInProgress)
     {
@@ -1133,6 +1127,7 @@ OnlyListenToOneClient(ClientPtr client)
 	XFD_ORSET(&AllSockets, &AllSockets, &AllClients);
 	GrabInProgress = client->index;
     }
+    return rc;
 }
 
 /****************
@@ -1218,7 +1213,7 @@ AttendClient (ClientPtr client)
 
 /* make client impervious to grabs; assume only executing client calls this */
 
-_X_EXPORT void
+void
 MakeClientGrabImpervious(ClientPtr client)
 {
     OsCommPtr oc = (OsCommPtr)client->osPrivate;
@@ -1237,7 +1232,7 @@ MakeClientGrabImpervious(ClientPtr client)
 
 /* make client pervious to grabs; assume only executing client calls this */
 
-_X_EXPORT void
+void
 MakeClientGrabPervious(ClientPtr client)
 {
     OsCommPtr oc = (OsCommPtr)client->osPrivate;

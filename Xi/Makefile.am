@@ -5,8 +5,12 @@ AM_CFLAGS = $(DIX_CFLAGS)
 libXi_la_SOURCES =	\
 	allowev.c \
 	allowev.h \
+        chdevcur.c \
+        chdevcur.h \
 	chgdctl.c \
 	chgdctl.h \
+        chdevhier.c \
+        chdevhier.h \
 	chgfctl.c \
 	chgfctl.h \
 	chgkbd.c \
@@ -23,9 +27,13 @@ libXi_la_SOURCES =	\
 	devbell.h \
 	exevents.c \
 	exglobals.h \
+        extgrbdev.c \
+        extgrbdev.h \
 	extinit.c \
 	getbmap.c \
 	getbmap.h \
+	getcptr.c \
+	getcptr.h \
 	getdctl.c \
 	getdctl.h \
 	getfctl.c \
@@ -54,6 +62,8 @@ libXi_la_SOURCES =	\
 	listdev.h \
 	opendev.c \
 	opendev.h \
+	querydp.c \
+	querydp.h \
 	queryst.c \
 	queryst.h \
 	selectev.c \
@@ -62,6 +72,8 @@ libXi_la_SOURCES =	\
 	sendexev.h \
 	setbmap.c \
 	setbmap.h \
+	setcptr.c \
+	setcptr.h \
 	setdval.c \
 	setdval.h \
 	setfocus.c \
@@ -75,6 +87,12 @@ libXi_la_SOURCES =	\
 	ungrdevb.c \
 	ungrdevb.h \
 	ungrdevk.c \
-	ungrdevk.h
+	ungrdevk.h \
+	warpdevp.c \
+	warpdevp.h \
+	xiproperty.c \
+	xiproperty.h \
+	xiselev.c \
+	xiselev.h
 
 EXTRA_DIST = stubs.c

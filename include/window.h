@@ -66,6 +66,10 @@ SOFTWARE.
 #define WT_NOMATCH 3
 #define NullWindow ((WindowPtr) 0)
 
+/* Forward declaration, we can't include input.h here */
+struct _DeviceIntRec;
+struct _Cursor;
+
 typedef struct _BackingStore *BackingStorePtr;
 typedef struct _Window *WindowPtr;
 
@@ -82,9 +86,6 @@ extern int WalkTree(
     ScreenPtr /*pScreen*/,
     VisitWindowProcPtr /*func*/,
     pointer /*data*/);
-
-extern WindowPtr AllocateWindow(
-    ScreenPtr /*pScreen*/);
 
 extern Bool CreateRootWindow(
     ScreenPtr /*pScreen*/);
@@ -119,7 +120,7 @@ extern int DeleteWindow(
     pointer /*pWin*/,
     XID /*wid*/);
 
-extern void DestroySubwindows(
+extern int DestroySubwindows(
     WindowPtr /*pWin*/,
     ClientPtr /*client*/);
 
@@ -133,6 +134,15 @@ extern int ChangeWindowAttributes(
     Mask /*vmask*/,
     XID* /*vlist*/,
     ClientPtr /*client*/);
+
+extern int ChangeWindowDeviceCursor(
+    WindowPtr /*pWin*/,
+    struct _DeviceIntRec* /*pDev*/,
+    struct _Cursor* /*pCursor*/);
+
+extern struct _Cursor* WindowGetDeviceCursor(
+    WindowPtr /*pWin*/,
+    struct _DeviceIntRec* /*pDev*/);
 
 /* Quartz support on Mac OS X uses the HIToolbox
    framework whose GetWindowAttributes function conflicts here. */
@@ -207,9 +217,14 @@ extern RegionPtr NotClippedByChildren(
 extern void SendVisibilityNotify(
     WindowPtr /*pWin*/);
 
-extern void SaveScreens(
-    int /*on*/,
-    int /*mode*/);
+extern int dixSaveScreens(
+    ClientPtr client,
+    int on,
+    int mode);
+
+extern int SaveScreens(
+    int on,
+    int mode);
 
 extern WindowPtr FindWindowWithOptional(
     WindowPtr /*w*/);

@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <signal.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -96,7 +97,6 @@ static pthread_t create_thread(void *func, void *arg) {
     return tid;
 }
 
-#ifdef MACHO_STARTUP
 /*** Mach-O IPC Stuffs ***/
 
 union MaxMsgSize {
@@ -213,7 +213,6 @@ static void socket_handoff_thread(void *arg) {
     unlink(handoff_data->filename);
     free(handoff_data);
     
-#ifndef XQUARTZ_EXPORTS_LAUNCHD_FD
     /* TODO: Clean up this race better... giving xinitrc time to run... need to wait for 1.5 branch:
      *
      * From ajax:
@@ -226,7 +225,6 @@ static void socket_handoff_thread(void *arg) {
     unsigned remain = 3000000;
     fprintf(stderr, "X11.app: Received new $DISPLAY fd: %d ... sleeping to allow xinitrc to catchup.\n", launchd_fd);
     while((remain = usleep(remain)) > 0);
-#endif
     
     fprintf(stderr, "X11.app Handing off fd to server thread via DarwinListenOnOpenFD(%d)\n", launchd_fd);
     DarwinListenOnOpenFD(launchd_fd);
@@ -303,6 +301,11 @@ kern_return_t do_request_fd_handoff_socket(mach_port_t port, string_t filename) 
     return KERN_SUCCESS;
 }
 
+kern_return_t do_request_pid(mach_port_t port, int *my_pid) {
+    *my_pid = getpid();
+    return KERN_SUCCESS;
+}
+
 /*** Server Startup ***/
 kern_return_t do_start_x11_server(mach_port_t port, string_array_t argv,
                                   mach_msg_type_number_t argvCnt,
@@ -336,17 +339,11 @@ kern_return_t do_start_x11_server(mach_port_t port, string_array_t argv,
 }
 
 int startup_trigger(int argc, char **argv, char **envp) {
-#else
-void *add_launchd_display_thread(void *data);
-
-int main(int argc, char **argv, char **envp) {
-#endif
     Display *display;
     const char *s;
     
     /* Take care of the case where we're called like a normal DDX */
     if(argc > 1 && argv[1][0] == ':') {
-#ifdef MACHO_STARTUP
         size_t i;
         kern_return_t kr;
         mach_port_t mp;
@@ -387,10 +384,6 @@ int main(int argc, char **argv, char **envp) {
             exit(EXIT_FAILURE);
         }
         exit(EXIT_SUCCESS);
-#else
-        create_thread(add_launchd_display_thread, NULL);
-        return server_main(argc, argv, envp);
-#endif
     }
 
     /* If we have a process serial number and it's our only arg, act as if
@@ -402,13 +395,6 @@ int main(int argc, char **argv, char **envp) {
         if(display) {
             /* Could open the display, start the launcher */
             XCloseDisplay(display);
-
-#ifdef XQUARTZ_EXPORTS_LAUNCHD_FD
-            fprintf(stderr, "X11.app: Received new DISPLAY fd: %d ... sleeping to allow xinitrc to catchup.\n", launchd_fd);
-            
-            /* TODO: Clean up this race better... givint xinitrc time to run. */
-            sleep(2);
-#endif
 
             return execute(command_from_prefs("app_to_run", DEFAULT_CLIENT));
         }
@@ -424,7 +410,6 @@ int main(int argc, char **argv, char **envp) {
     return execute(command_from_prefs("startx_script", DEFAULT_STARTX));
 }
 
-#ifdef MACHO_STARTUP
 /*** Main ***/
 int main(int argc, char **argv, char **envp) {
     Bool listenOnly = FALSE;
@@ -472,17 +457,6 @@ int main(int argc, char **argv, char **envp) {
     
     return EXIT_SUCCESS;
 }
-#else
-
-void *add_launchd_display_thread(void *data) {
-    /* Start listening on the launchd fd */
-    int launchd_fd = launchd_display_fd();
-    if(launchd_fd != -1) {
-        DarwinListenOnOpenFD(launchd_fd);
-    }
-    return NULL;
-}
-#endif
     
 static int execute(const char *command) {
     const char *newargv[7];

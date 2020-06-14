@@ -35,13 +35,14 @@
 #include <fcntl.h>
 #include <X11/X.h>
 #include <X11/Xmd.h>
+#include <pciaccess.h>
+#include "Pci.h"
 #include "os.h"
 #include "loaderProcs.h"
 #include "xf86.h"
 #include "xf86Config.h"
 #include "xf86_OSlib.h"
 #include "xf86Priv.h"
-#include "xf86PciData.h"
 #define IN_XSERVER
 #include "xf86Parser.h"
 #include "xf86tokens.h"
@@ -56,7 +57,7 @@
 
 typedef struct _DevToConfig {
     GDevRec GDev;
-    pciVideoPtr pVideo;
+    struct pci_device * pVideo;
 #if (defined(__sparc__) || defined(__sparc)) && !defined(__OpenBSD__)
     sbusDevicePtr sVideo;
 #endif
@@ -75,12 +76,6 @@ static char *DFLT_MOUSE_PROTO = "OSMouse";
 #elif defined(__UNIXWARE__)
 static char *DFLT_MOUSE_PROTO = "OSMouse";
 static char *DFLT_MOUSE_DEV = "/dev/mouse";
-#elif defined(QNX4)
-static char *DFLT_MOUSE_PROTO = "OSMouse";
-static char *DFLT_MOUSE_DEV = "/dev/mouse";
-#elif defined(__QNXNTO__)
-static char *DFLT_MOUSE_PROTO = "OSMouse";
-static char *DFLT_MOUSE_DEV = "/dev/devi/mouse0";
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
 static char *DFLT_MOUSE_DEV = "/dev/sysmouse";
 static char *DFLT_MOUSE_PROTO = "auto";
@@ -101,7 +96,7 @@ GDevPtr
 xf86AddBusDeviceToConfigure(const char *driver, BusType bus, void *busData, int chipset)
 {
     int i, j;
-    pciVideoPtr pVideo = NULL;
+    struct pci_device * pVideo = NULL;
     Bool isPrimary = FALSE;
 
     if (xf86DoProbe || !xf86DoConfigure || !xf86DoConfigurePass1)
@@ -110,11 +105,12 @@ xf86AddBusDeviceToConfigure(const char *driver, BusType bus, void *busData, int 
     /* Check for duplicates */
     switch (bus) {
     case BUS_PCI:
-	pVideo = (pciVideoPtr) busData;
+	pVideo = (struct pci_device *) busData;
 	for (i = 0;  i < nDevToConfig;  i++)
 	    if (DevToConfig[i].pVideo &&
+		(DevToConfig[i].pVideo->domain == pVideo->domain) &&
 		(DevToConfig[i].pVideo->bus == pVideo->bus) &&
-		(DevToConfig[i].pVideo->device == pVideo->device) &&
+		(DevToConfig[i].pVideo->dev == pVideo->dev) &&
 		(DevToConfig[i].pVideo->func == pVideo->func))
 		return NULL;
 	isPrimary = xf86IsPrimaryPci(pVideo);
@@ -173,9 +169,9 @@ xf86AddBusDeviceToConfigure(const char *driver, BusType bus, void *busData, int 
 	char busnum[8];
 
 	NewDevice.pVideo = pVideo;
-	xf86FindPciNamesByDevice(pVideo->vendor, pVideo->chipType,
-				 NOVENDOR, NOSUBSYS,
-				 &VendorName, &CardName, NULL, NULL);
+
+	VendorName = pci_device_get_vendor_name( pVideo );
+	CardName = pci_device_get_device_name( pVideo );
 
 	if (!VendorName) {
 	    VendorName = xnfalloc(15);
@@ -197,13 +193,13 @@ xf86AddBusDeviceToConfigure(const char *driver, BusType bus, void *busData, int 
 	NewDevice.GDev.busID = xnfalloc(16);
 	xf86FormatPciBusNumber(pVideo->bus, busnum);
 	sprintf(NewDevice.GDev.busID, "PCI:%s:%d:%d",
-	    busnum, pVideo->device, pVideo->func);
+	    busnum, pVideo->dev, pVideo->func);
 
-	NewDevice.GDev.chipID = pVideo->chipType;
-	NewDevice.GDev.chipRev = pVideo->chipRev;
+	NewDevice.GDev.chipID = pVideo->device_id;
+	NewDevice.GDev.chipRev = pVideo->revision;
 
 	if (chipset < 0)
-	    chipset = (pVideo->vendor << 16) | pVideo->chipType;
+	    chipset = (pVideo->vendor_id << 16) | pVideo->device_id;
 	}
 	break;
     case BUS_ISA:
@@ -249,7 +245,8 @@ xf86AddBusDeviceToConfigure(const char *driver, BusType bus, void *busData, int 
  * Backwards compatibility
  */
 _X_EXPORT GDevPtr
-xf86AddDeviceToConfigure(const char *driver, pciVideoPtr pVideo, int chipset)
+xf86AddDeviceToConfigure(const char *driver, struct pci_device * pVideo, 
+			 int chipset)
 {
     return xf86AddBusDeviceToConfigure(driver, pVideo ? BUS_PCI : BUS_ISA,
 				       pVideo, chipset);
@@ -290,8 +287,7 @@ configureInputSection (void)
 #endif
     }
 
-    mouse = xf86confmalloc(sizeof(XF86ConfInputRec));
-    memset((XF86ConfInputPtr)mouse,0,sizeof(XF86ConfInputRec));
+    mouse = xf86confcalloc(1, sizeof(XF86ConfInputRec));
     mouse->inp_identifier = "Mouse0";
     mouse->inp_driver = "mouse";
     mouse->inp_option_lst = 
@@ -327,8 +323,7 @@ configureScreenSection (int screennum)
     {
 	XF86ConfDisplayPtr display;
 
-	display = xf86confmalloc(sizeof(XF86ConfDisplayRec));
-    	memset((XF86ConfDisplayPtr)display,0,sizeof(XF86ConfDisplayRec));
+	display = xf86confcalloc(1, sizeof(XF86ConfDisplayRec));
 	display->disp_depth = depths[i];
 	display->disp_black.red = display->disp_white.red = -1;
 	display->disp_black.green = display->disp_white.green = -1;
@@ -369,9 +364,6 @@ configureDeviceSection (int screennum)
     char identifier[16];
     OptionInfoPtr p;
     int i = 0;
-#ifdef DO_FBDEV_PROBE
-    Bool foundFBDEV = FALSE;
-#endif
     parsePrologue (XF86ConfDevicePtr, XF86ConfDeviceRec)
 
     /* Move device info to parser structure */
@@ -439,32 +431,6 @@ configureDeviceSection (int screennum)
 	    }
     	}
     }
-
-#ifdef DO_FBDEV_PROBE
-    /* Crude mechanism to auto-detect fbdev (os dependent) */
-    /* Skip it for now. Options list it anyway, and we can't
-     * determine which screen/driver this belongs too anyway. */
-    {
-	int fd;
-
-	fd = open("/dev/fb0", 0);
-	if (fd != -1) {
-	    foundFBDEV = TRUE;
-	    close(fd);
-	}
-    }
-
-    if (foundFBDEV) {
-	XF86OptionPtr fbdev;
-
-    	fbdev = xf86confmalloc(sizeof(XF86OptionRec));
-    	memset((XF86OptionPtr)fbdev,0,sizeof(XF86OptionRec));
-    	fbdev->opt_name = "UseFBDev";
-	fbdev->opt_val = "ON";
-	ptr->dev_option_lst = (XF86OptionPtr)xf86addListItem(
-					(glp)ptr->dev_option_lst, (glp)fbdev);
-    }
-#endif
 
     return ptr;
 }
@@ -558,8 +524,7 @@ configureModuleSection (void)
 	for (el = elist; *el; el++) {
 	    XF86LoadPtr module;
 
-    	    module = xf86confmalloc(sizeof(XF86LoadRec));
-    	    memset((XF86LoadPtr)module,0,sizeof(XF86LoadRec));
+    	    module = xf86confcalloc(1, sizeof(XF86LoadRec));
     	    module->load_name = *el;
             ptr->mod_load_lst = (XF86LoadPtr)xf86addListItem(
                                 (glp)ptr->mod_load_lst, (glp)module);
@@ -573,8 +538,7 @@ configureModuleSection (void)
 	for (el = elist; *el; el++) {
 	    XF86LoadPtr module;
 
-    	    module = xf86confmalloc(sizeof(XF86LoadRec));
-    	    memset((XF86LoadPtr)module,0,sizeof(XF86LoadRec));
+    	    module = xf86confcalloc(1, sizeof(XF86LoadRec));
     	    module->load_name = *el;
 
             /* Add only those font backends which are referenced by fontpath */
@@ -602,8 +566,6 @@ configureFilesSection (void)
        ptr->file_modulepath = strdup(xf86ModulePath);
    if (defaultFontPath)
        ptr->file_fontpath = strdup(defaultFontPath);
-   if (rgbPath)
-       ptr->file_rgbpath = strdup(rgbPath);
    
     return ptr;
 }
@@ -750,31 +712,25 @@ DoConfigure()
     xf86FindPrimaryDevice();
  
     /* Create XF86Config file structure */
-    xf86config = malloc(sizeof(XF86ConfigRec));
-    memset ((XF86ConfigPtr)xf86config, 0, sizeof(XF86ConfigRec));
-    xf86config->conf_device_lst = NULL;
-    xf86config->conf_screen_lst = NULL;
-    xf86config->conf_monitor_lst = NULL;
+    xf86config = calloc(1, sizeof(XF86ConfigRec));
 
     /* Call all of the probe functions, reporting the results. */
     for (CurrentDriver = 0;  CurrentDriver < xf86NumDrivers;  CurrentDriver++) {
 	xorgHWFlags flags;
-	
+	Bool found_screen;
+	DriverRec * const drv = xf86DriverList[CurrentDriver];
+
 	if (!xorgHWAccess) {
-	    if (!xf86DriverList[CurrentDriver]->driverFunc
-		|| !xf86DriverList[CurrentDriver]->driverFunc(NULL,
-						GET_REQUIRED_HW_INTERFACES,
-						&flags)
+	    if (!drv->driverFunc
+		|| !drv->driverFunc( NULL, GET_REQUIRED_HW_INTERFACES, &flags )
 		|| NEED_IO_ENABLED(flags)) 
 		continue;
 	}
 	
-	if (xf86DriverList[CurrentDriver]->Probe == NULL) continue;
-
-	if ((*xf86DriverList[CurrentDriver]->Probe)(
-	    xf86DriverList[CurrentDriver], PROBE_DETECT) &&
-	    xf86DriverList[CurrentDriver]->Identify)
-	    (*xf86DriverList[CurrentDriver]->Identify)(0);
+	found_screen = xf86CallDriverProbe( drv, TRUE );
+	if ( found_screen && drv->Identify ) {
+	    (*drv->Identify)(0);
+	}
     }
 
     if (nDevToConfig <= 0) {
@@ -822,16 +778,13 @@ DoConfigure()
     	homebuf[PATH_MAX-1] = '\0';
     	home = homebuf;
     	if (!(filename =
-	     (char *)ALLOCATE_LOCAL(strlen(home) + 
+	     (char *)xalloc(strlen(home) + 
 	  			 strlen(configfile) + 3)))
+		goto bail;
 
       	if (home[0] == '/' && home[1] == '\0')
             home[0] = '\0';
-#ifndef QNX4
 	sprintf(filename, "%s/%s", home,configfile);
-#else
-	sprintf(filename, "//%d%s/%s", getnid(),home,configfile);
-#endif
 	
     }
 
@@ -860,7 +813,7 @@ DoConfigure()
 	    
 	    oldNumScreens = xf86NumScreens;
 
-	    (*xf86DriverList[i]->Probe)(xf86DriverList[i], 0);
+	    xf86CallDriverProbe( xf86DriverList[i], FALSE );
 
 	    /* reorder */
 	    k = screennum > 0 ? screennum : 1;
@@ -888,7 +841,6 @@ DoConfigure()
 		    }
 		}
 	    }
-	    xf86SetPciVideo(NULL,NONE);
 	}
 	xfree(driverProbed);
     }

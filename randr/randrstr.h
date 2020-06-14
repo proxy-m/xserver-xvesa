@@ -54,6 +54,10 @@
 /* required for ABI compatibility for now */
 #define RANDR_10_INTERFACE 1
 #define RANDR_12_INTERFACE 1
+#define RANDR_13_INTERFACE 1 /* requires RANDR_12_INTERFACE */
+#define RANDR_GET_CRTC_INTERFACE 1
+
+#define RANDR_INTERFACE_VERSION 0x0103
 
 typedef XID	RRMode;
 typedef XID	RROutput;
@@ -175,6 +179,12 @@ typedef void (*RRModeDestroyProcPtr) (ScreenPtr	    pScreen,
 
 #endif
 
+#if RANDR_13_INTERFACE
+typedef Bool (*RROutputGetPropertyProcPtr) (ScreenPtr		pScreen,
+					    RROutputPtr		output,
+					    Atom		property);
+#endif /* RANDR_13_INTERFACE */
+
 typedef Bool (*RRGetInfoProcPtr) (ScreenPtr pScreen, Rotation *rotations);
 typedef Bool (*RRCloseScreenProcPtr) ( int i, ScreenPtr pscreen);
 
@@ -220,6 +230,9 @@ typedef struct _rrScrPriv {
     RROutputValidateModeProcPtr	rrOutputValidateMode;
     RRModeDestroyProcPtr	rrModeDestroy;
 #endif
+#if RANDR_13_INTERFACE
+    RROutputGetPropertyProcPtr	rrOutputGetProperty;
+#endif
     
     /*
      * Private part of the structure; not considered part of the ABI
@@ -262,11 +275,11 @@ typedef struct _rrScrPriv {
 #endif
 } rrScrPrivRec, *rrScrPrivPtr;
 
-extern int rrPrivIndex;
+extern DevPrivateKey rrPrivKey;
 
-#define rrGetScrPriv(pScr)  ((rrScrPrivPtr) (pScr)->devPrivates[rrPrivIndex].ptr)
+#define rrGetScrPriv(pScr)  ((rrScrPrivPtr)dixLookupPrivate(&(pScr)->devPrivates, rrPrivKey))
 #define rrScrPriv(pScr)	rrScrPrivPtr    pScrPriv = rrGetScrPriv(pScr)
-#define SetRRScreen(s,p) ((s)->devPrivates[rrPrivIndex].ptr = (pointer) (p))
+#define SetRRScreen(s,p) dixSetPrivate(&(s)->devPrivates, rrPrivKey, p)
 
 /*
  * each window has a list of clients requesting
@@ -298,7 +311,7 @@ typedef struct _RRClient {
 } RRClientRec, *RRClientPtr;
 
 extern RESTYPE	RRClientType, RREventType; /* resource types for event masks */
-extern int	RRClientPrivateIndex;
+extern DevPrivateKey RRClientPrivateKey;
 extern RESTYPE	RRCrtcType, RRModeType, RROutputType;
 
 #define LookupOutput(client,id,a) ((RROutputPtr) \
@@ -311,7 +324,7 @@ extern RESTYPE	RRCrtcType, RRModeType, RROutputType;
 				 (SecurityLookupIDByType (client, id, \
 							  RRModeType, a)))
 
-#define GetRRClient(pClient)    ((RRClientPtr) (pClient)->devPrivates[RRClientPrivateIndex].ptr)
+#define GetRRClient(pClient)    ((RRClientPtr)dixLookupPrivate(&(pClient)->devPrivates, RRClientPrivateKey))
 #define rrClientPriv(pClient)	RRClientPtr pRRClient = GetRRClient(pClient)
 
 /* Initialize the extension */
@@ -404,6 +417,11 @@ miRROutputSetProperty (ScreenPtr	    pScreen,
 		       RROutputPtr	    output,
 		       Atom		    property,
 		       RRPropertyValuePtr   value);
+
+Bool
+miRROutputGetProperty (ScreenPtr	    pScreen,
+		       RROutputPtr	    output,
+		       Atom		    property);
 
 Bool
 miRROutputValidateMode (ScreenPtr	    pScreen,

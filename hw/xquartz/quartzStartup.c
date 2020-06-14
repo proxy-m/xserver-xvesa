@@ -45,13 +45,7 @@
 #include "opaque.h"
 #include "micmap.h"
 
-#ifdef NDEBUG
-#undef NDEBUG
 #include <assert.h>
-#define NDEBUG 1
-#else
-#include <assert.h>
-#endif
 
 #include <pthread.h>
 

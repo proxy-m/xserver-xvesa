@@ -52,6 +52,7 @@
 #include "xf86_OSproc.h"
 
 #include "xf86RAC.h"
+#include "Pci.h"
 
 /* Entity data */
 EntityPtr *xf86Entities = NULL;	/* Bus slots claimed by drivers */
@@ -59,7 +60,10 @@ int xf86NumEntities = 0;
 static int xf86EntityPrivateCount = 0;
 BusAccPtr xf86BusAccInfo = NULL;
 
-xf86AccessRec AccessNULL = {NULL,NULL,NULL};
+static void
+noopEnableDisable(void *arg) { }
+
+xf86AccessRec AccessNULL = { noopEnableDisable, noopEnableDisable, NULL };
 
 xf86CurrentAccessRec xf86CurrentAccess = {NULL,NULL};
 
@@ -74,10 +78,6 @@ static resPtr AccReducers = NULL;
 
 /* resource lists */
 resPtr Acc = NULL;
-resPtr osRes = NULL;
-
-/* allocatable ranges */
-resPtr ResRange = NULL;
 
 /* predefined special resources */
 _X_EXPORT resRange resVgaExclusive[] = {_VGA_EXCLUSIVE, _END};
@@ -173,11 +173,9 @@ xf86EntityInit(void)
 		((BusAccPtr)xf86Entities[i]->access->busAcc)->set_f
 		    (xf86Entities[i]->access->busAcc);
 	    pacc = xf86Entities[i]->access->fallback;
-	    if (pacc->AccessEnable)
-		pacc->AccessEnable(pacc->arg);
+	    pacc->AccessEnable(pacc->arg);
 	    xf86Entities[i]->entityInit(i,xf86Entities[i]->private);
-	    if (pacc->AccessDisable)
-		pacc->AccessDisable(pacc->arg);
+	    pacc->AccessDisable(pacc->arg);
 	    /* remove init resources after init is processed */
 	    pprev_next = &Acc;
 	    res = Acc;
@@ -216,11 +214,9 @@ EntityEnter(void)
 		((BusAccPtr)xf86Entities[i]->access->busAcc)->set_f
 		    (xf86Entities[i]->access->busAcc);
 	    pacc = xf86Entities[i]->access->fallback;
-	    if (pacc->AccessEnable)
-		pacc->AccessEnable(pacc->arg);
+	    pacc->AccessEnable(pacc->arg);
 	    xf86Entities[i]->entityEnter(i,xf86Entities[i]->private);
-	    if (pacc->AccessDisable)
-		pacc->AccessDisable(pacc->arg);
+	    pacc->AccessDisable(pacc->arg);
 	}
 }
 
@@ -236,11 +232,9 @@ EntityLeave(void)
 		((BusAccPtr)xf86Entities[i]->access->busAcc)->set_f
 		    (xf86Entities[i]->access->busAcc);
 	    pacc = xf86Entities[i]->access->fallback;
-	    if (pacc->AccessEnable)
-		pacc->AccessEnable(pacc->arg);
+	    pacc->AccessEnable(pacc->arg);
 	    xf86Entities[i]->entityLeave(i,xf86Entities[i]->private);
-	    if (pacc->AccessDisable)
-		pacc->AccessDisable(pacc->arg);
+	    pacc->AccessDisable(pacc->arg);
 	}
 }
 
@@ -253,9 +247,7 @@ xf86IsEntityPrimary(int entityIndex)
 
     switch (pEnt->busType) {
     case BUS_PCI:
-	return (pEnt->pciBusId.bus == primaryBus.id.pci.bus &&
-		pEnt->pciBusId.device == primaryBus.id.pci.device &&
-		pEnt->pciBusId.func == primaryBus.id.pci.func);
+	return (pEnt->bus.id.pci == primaryBus.id.pci);
     case BUS_ISA:
 	return TRUE;
     case BUS_SBUS:
@@ -265,7 +257,7 @@ xf86IsEntityPrimary(int entityIndex)
     }
 }
 	
-_X_EXPORT Bool
+Bool
 xf86SetEntityFuncs(int entityIndex, EntityProc init, EntityProc enter,
 		   EntityProc leave, pointer private)
 {
@@ -295,8 +287,10 @@ xf86AddEntityToScreen(ScrnInfoPtr pScrn, int entityIndex)
     if (entityIndex == -1)
 	return;
     if (xf86Entities[entityIndex]->inUse &&
-	!(xf86Entities[entityIndex]->entityProp & IS_SHARED_ACCEL))
-	FatalError("Requested Entity already in use!\n");
+	!(xf86Entities[entityIndex]->entityProp & IS_SHARED_ACCEL)) {
+	ErrorF("Requested Entity already in use!\n");
+	return;
+    }
 
     pScrn->numEntities++;
     pScrn->entityList = xnfrealloc(pScrn->entityList,
@@ -361,10 +355,10 @@ xf86RemoveEntityFromScreen(ScrnInfoPtr pScrn, int entityIndex)
 	    peacc = xf86Entities[pScrn->entityList[i]]->access;
 	    (*ptr) = peacc->next;
 	    /* disable entity: call disable func */
-	    if (peacc->pAccess && peacc->pAccess->AccessDisable)
+	    if (peacc->pAccess)
 		peacc->pAccess->AccessDisable(peacc->pAccess->arg);
 	    /* also disable fallback - just in case */
-	    if (peacc->fallback && peacc->fallback->AccessDisable)
+	    if (peacc->fallback)
 		peacc->fallback->AccessDisable(peacc->fallback->arg);
 	    for (i++; i < pScrn->numEntities; i++)
 		pScrn->entityList[i-1] = pScrn->entityList[i];
@@ -394,10 +388,10 @@ xf86ClearEntityListForScreen(int scrnIndex)
 	xf86Entities[entityIndex]->inUse = FALSE;
 	/* disable resource: call the disable function */
 	peacc = xf86Entities[entityIndex]->access;
-	if (peacc->pAccess && peacc->pAccess->AccessDisable)
+	if (peacc->pAccess)
 	    peacc->pAccess->AccessDisable(peacc->pAccess->arg);
 	/* and the fallback function */
-	if (peacc->fallback && peacc->fallback->AccessDisable)
+	if (peacc->fallback)
 	    peacc->fallback->AccessDisable(peacc->fallback->arg);
 	/* shared resources are only needed when entity is active: remove */
 	xf86DeallocateResourcesForEntity(entityIndex, ResShared);
@@ -412,7 +406,7 @@ xf86ClearEntityListForScreen(int scrnIndex)
     pScrn->entityInstanceList = NULL;
 }
 
-_X_EXPORT void
+void
 xf86DeallocateResourcesForEntity(int entityIndex, unsigned long type)
 {
     resPtr *pprev_next = &Acc;
@@ -528,14 +522,14 @@ disableAccess(void)
     for (i = 0; i < xf86NumScreens; i++) {
 	peacc = xf86Screens[i]->CurrentAccess->pIoAccess;
 	while (peacc) {
-	    if (peacc->pAccess && peacc->pAccess->AccessDisable)
+	    if (peacc->pAccess)
 		peacc->pAccess->AccessDisable(peacc->pAccess->arg);
 	    peacc = peacc->next;
 	}
 	xf86Screens[i]->CurrentAccess->pIoAccess = NULL;
 	peacc = xf86Screens[i]->CurrentAccess->pMemAccess;
 	while (peacc) {
-	    if (peacc->pAccess && peacc->pAccess->AccessDisable)
+	    if (peacc->pAccess)
 		peacc->pAccess->AccessDisable(peacc->pAccess->arg);
 	    peacc = peacc->next;
 	}
@@ -544,8 +538,7 @@ disableAccess(void)
     /* then call the generic entity disable funcs */
     for (i = 0; i < xf86NumEntities; i++) {
 	pacc = xf86Entities[i]->access->fallback; 
-	if (pacc->AccessDisable)
-	    pacc->AccessDisable(pacc->arg);
+	pacc->AccessDisable(pacc->arg);
     }
 }
 
@@ -695,16 +688,16 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 	    pScrn->CurrentAccess->pMemAccess = NULL;
 	while (pceAcc) {
 	    pAcc = pceAcc->pAccess;
-	    if ( pAcc && pAcc->AccessDisable) 
-		(*pAcc->AccessDisable)(pAcc->arg);
+	    if (pAcc)
+		pAcc->AccessDisable(pAcc->arg);
 	    pceAcc = pceAcc->next;
 	}
 	if (pScrn->busAccess)
 	    ((BusAccPtr)pScrn->busAccess)->set_f(pScrn->busAccess);
 	while (peAcc) {
 	    pAcc = peAcc->pAccess;
-	    if (pAcc && pAcc->AccessEnable) 
-		(*pAcc->AccessEnable)(pAcc->arg);
+	    if (pAcc) 
+		pAcc->AccessEnable(pAcc->arg);
 	    peAcc = peAcc->next;
 	}
 	pScrn->CurrentAccess->pIoAccess = (EntityAccessPtr) pScrn->access;
@@ -716,8 +709,8 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 	    tmp = pceAcc;
 	    while (pceAcc) {
 		pAcc = pceAcc->pAccess;
-		if (pAcc && pAcc->AccessDisable)
-		    (*pAcc->AccessDisable)(pAcc->arg);
+		if (pAcc)
+		    pAcc->AccessDisable(pAcc->arg);
 		pceAcc = pceAcc->next;
 	    }
 	    pceAcc = pScrn->CurrentAccess->pMemAccess;
@@ -725,8 +718,8 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 		&& tmp !=pceAcc) {
 		while (pceAcc) {
 		    pAcc = pceAcc->pAccess;
-		    if (pAcc && pAcc->AccessDisable)
-			(*pAcc->AccessDisable)(pAcc->arg);
+		    if (pAcc)
+			pAcc->AccessDisable(pAcc->arg);
 		    pceAcc = pceAcc->next;
 		}
 	    }
@@ -737,8 +730,8 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 	    }
 	    while (pceAcc) {  /* current Mem != pAccess */
 		pAcc = pceAcc->pAccess;
-		if (pAcc && pAcc->AccessDisable) 
-		    (*pAcc->AccessDisable)(pAcc->arg);
+		if (pAcc)
+		    pAcc->AccessDisable(pAcc->arg);
 		pceAcc = pceAcc->next;
 	    }
 	}
@@ -746,8 +739,8 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 	    ((BusAccPtr)pScrn->busAccess)->set_f(pScrn->busAccess);
 	while (peAcc) {
 	    pAcc = peAcc->pAccess;
-	    if (pAcc && pAcc->AccessEnable) 
-		(*pAcc->AccessEnable)(pAcc->arg);
+	    if (pAcc) 
+		pAcc->AccessEnable(pAcc->arg);
 		peAcc = peAcc->next;
 	}
 	pScrn->CurrentAccess->pMemAccess =
@@ -763,16 +756,16 @@ xf86EnableAccess(ScrnInfoPtr pScrn)
 	    pScrn->CurrentAccess->pIoAccess = NULL;
 	while (pceAcc) {
 	    pAcc = pceAcc->pAccess;
-	    if ( pAcc && pAcc->AccessDisable) 
-		(*pAcc->AccessDisable)(pAcc->arg);
+	    if (pAcc)
+		pAcc->AccessDisable(pAcc->arg);
 	    pceAcc = pceAcc->next;
 	}
 	if (pScrn->busAccess)
 	    ((BusAccPtr)pScrn->busAccess)->set_f(pScrn->busAccess);
 	while (peAcc) {
 	    pAcc = peAcc->pAccess;
-	    if (pAcc && pAcc->AccessEnable) 
-		(*pAcc->AccessEnable)(pAcc->arg);
+	    if (pAcc)
+		pAcc->AccessEnable(pAcc->arg);
 	    peAcc = peAcc->next;
 	}
 	pScrn->CurrentAccess->pMemAccess = (EntityAccessPtr) pScrn->access;
@@ -811,13 +804,11 @@ xf86SetCurrentAccess(Bool Enable, ScrnInfoPtr pScrn)
 
     while (pceAcc) {
 	pAcc = pceAcc->pAccess;
-	if ( pAcc) {
-	    if (!Enable) {
-		if (pAcc->AccessDisable) 
-		    (*pAcc->AccessDisable)(pAcc->arg);
+	if (pAcc) {
+	    if (Enable) {
+		pAcc->AccessEnable(pAcc->arg);
 	    } else {
-		if (pAcc->AccessEnable) 
-		    (*pAcc->AccessEnable)(pAcc->arg);
+		pAcc->AccessDisable(pAcc->arg);
 	    }
 	}
 	pceAcc = pceAcc->next;
@@ -839,11 +830,6 @@ xf86SetAccessFuncs(EntityInfoPtr pEnt, xf86SetAccessFuncPtr funcs,
 
     rac = xf86Entities[pEnt->index]->rac;
 
-    if (funcs->mem == funcs->io_mem && funcs->mem && funcs->io)
-	xf86Entities[pEnt->index]->entityProp |= NO_SEPARATE_MEM_FROM_IO;
-    if (funcs->io == funcs->io_mem && funcs->mem && funcs->io)
-	xf86Entities[pEnt->index]->entityProp |= NO_SEPARATE_IO_FROM_MEM;
-    
     rac->mem_new = funcs->mem;
     rac->io_new = funcs->io;
     rac->io_mem_new = funcs->io_mem;
@@ -1138,30 +1124,21 @@ checkConflict(resRange *rgp, resPtr pRes, int entityIndex,
 }
 
 /*
- * ChkConflict() -- used within xxxBus ; find conflict with any location.
- */
-memType
-ChkConflict(resRange *rgp, resPtr res, xf86State state)
-{
-    return checkConflict(rgp, res, -2, state,FALSE);
-}
-
-/*
  * xf86ChkConflict() - This function is the low level interface to
  * the resource broker that gets exported. Tests all resources ie.
  * performs test with SETUP flag.
  */
-_X_EXPORT memType
+static memType
 xf86ChkConflict(resRange *rgp, int entityIndex)
 {
-    return checkConflict(rgp, Acc, entityIndex, SETUP,FALSE);
+    return checkConflict(rgp, Acc, entityIndex, SETUP, FALSE);
 }
 
 /*
  * Resources List handling
  */
 
-_X_EXPORT resPtr
+static resPtr
 xf86JoinResLists(resPtr rlist1, resPtr rlist2)
 {
     resPtr pRes;
@@ -1178,7 +1155,7 @@ xf86JoinResLists(resPtr rlist1, resPtr rlist2)
     return rlist1;
 }
 
-_X_EXPORT resPtr
+resPtr
 xf86AddResToList(resPtr rlist, resRange *range, int entityIndex)
 {
     resPtr new;
@@ -1228,7 +1205,7 @@ xf86FreeResList(resPtr rlist)
     xfree(rlist);
 }
 
-_X_EXPORT resPtr
+static resPtr
 xf86DupResList(const resPtr rlist)
 {
     resPtr pRes, ret, prev, new;
@@ -1248,7 +1225,7 @@ xf86DupResList(const resPtr rlist)
     return ret;
 }
 
-_X_EXPORT void
+static void
 xf86PrintResList(int verb, resPtr list)
 {
     int i = 0;
@@ -1361,27 +1338,12 @@ xf86AddRangesToList(resPtr list, resRange *pRange, int entityIndex)
 void
 xf86ResourceBrokerInit(void)
 {
-    resPtr resPci;
-
-    osRes = NULL;
-
-    /* Get the addressable ranges */
-    ResRange = xf86BusAccWindowsFromOS();
-    xf86MsgVerb(X_INFO, 3, "Addressable bus resource ranges are\n");
-    xf86PrintResList(3, ResRange);
+    Acc = NULL;
 
     /* Get the ranges used exclusively by the system */
-    osRes = xf86AccResFromOS(osRes);
-    xf86MsgVerb(X_INFO, 3, "OS-reported resource ranges:\n");
-    xf86PrintResList(3, osRes);
-
-    /* Bus dep initialization */
-    resPci = ResourceBrokerInitPci(&osRes);
-    Acc = xf86JoinResLists(xf86DupResList(osRes), resPci);
-    
-    xf86MsgVerb(X_INFO, 3, "All system resource ranges:\n");
+    Acc = xf86AccResFromOS(Acc);
+    xf86MsgVerb(X_INFO, 3, "System resource ranges:\n");
     xf86PrintResList(3, Acc);
-
 }
 
 #define MEM_ALIGN (1024 * 1024)
@@ -1393,74 +1355,6 @@ xf86ResourceBrokerInit(void)
  * At resource broker initialization this is no problem as this
  * only deals with exclusive resources.
  */
-#if 0
-void
-RemoveOverlaps(resPtr target, resPtr list, Bool pow2Alignment, Bool useEstimated)
-{
-    resPtr pRes;
-    memType size, newsize, adjust;
-
-    if (!target)
-	return;
-    
-    for (pRes = list; pRes; pRes = pRes->next) {
-	if (pRes != target
-	    && ((pRes->res_type & ResTypeMask) ==
-		(target->res_type & ResTypeMask))
-	    && pRes->block_begin <= target->block_end
-	    && pRes->block_end >= target->block_begin) {
-	    /* Possibly ignore estimated resources */
-	    if (!useEstimated && (pRes->res_type & ResEstimated)) continue;
-	    /*
-	     * Target should be a larger region than pRes.  If pRes fully
-	     * contains target, don't do anything unless target can overlap.
-	     */
-	    if (pRes->block_begin <= target->block_begin &&
-		pRes->block_end >= target->block_end) {
-		if (target->res_type & ResOverlap) {
-		    /* Nullify range but keep its ResOverlap bit on */
-		    target->block_end = target->block_begin - 1;
-		    return;
-		}
-		continue;
-	    }
-	    /*
-	     * In cases where the target and pRes have the same starting
-	     * address, reduce the size of the target (given it's an estimate).
-	     */
-	    if (pRes->block_begin == target->block_begin) {
-		if (target->res_type & ResOverlap)
-		    target->block_end = target->block_begin - 1;
-		else
-		    target->block_end = pRes->block_end;
-	    }
-	    /* Otherwise, trim target to remove the overlap */
-	    else if (pRes->block_begin <= target->block_end) {
-		target->block_end = pRes->block_begin - 1;
-	    } else if (!pow2Alignment &&
-		       pRes->block_end >= target->block_begin) {
-		target->block_begin = pRes->block_end + 1;
-	    }
-	    if (pow2Alignment) {
-		/*
-		 * Align to a power of two.  This requires finding the
-		 * largest power of two that is smaller than the adjusted
-		 * size.
-		 */
-		size = target->block_end - target->block_begin + 1;
-		newsize = 1UL << (sizeof(memType) * 8 - 1);
-		while (!(newsize & size))
-		    newsize >>= 1;
-		target->block_end = target->block_begin + newsize - 1;
-	    } else if (target->block_end > MEM_ALIGN) {
-		/* Align the end to MEM_ALIGN */
-		if ((adjust = (target->block_end + 1) % MEM_ALIGN))
-		    target->block_end -= adjust;
-	    }
-	}
-    }
-}
-#else
 
 void
 RemoveOverlaps(resPtr target, resPtr list, Bool pow2Alignment, Bool useEstimated)
@@ -1541,217 +1435,8 @@ RemoveOverlaps(resPtr target, resPtr list, Bool pow2Alignment, Bool useEstimated
     }
 }
 
-#endif
-
 /*
- * Resource request code
- */
-
-#define ALIGN(x,a) ((x) + a) &~(a)
-
-_X_EXPORT resRange 
-xf86GetBlock(unsigned long type, memType size,
-	 memType window_start, memType window_end,
-	 memType align_mask, resPtr avoid)
-{
-    memType min, max, tmp;
-    resRange r = {ResEnd,0,0};
-    resPtr res_range = ResRange;
-    
-    if (!size) return r;
-    if (window_end < window_start || (window_end - window_start) < (size - 1)) {
-	ErrorF("Requesting insufficient memory window!:"
-	       " start: 0x%lx end: 0x%lx size 0x%lx\n",
-	       window_start,window_end,size);
-	return r;
-    }
-    type = (type & ~(ResExtMask | ResBios | ResEstimated)) | ResBlock;
-    
-    while (res_range) {
-	if ((type & ResTypeMask) == (res_range->res_type & ResTypeMask)) {
-	    if (res_range->block_begin > window_start)
-		min = res_range->block_begin;
-	    else
-		min = window_start;
-	    if (res_range->block_end < window_end)
-		max = res_range->block_end;
-	    else
-		max = window_end;
-	    min = ALIGN(min,align_mask);
-	    /* do not produce an overflow! */
-	    while (min < max && (max - min) >= (size - 1)) {
-		RANGE(r,min,min + size - 1,type);
-		tmp = ChkConflict(&r,Acc,SETUP);
-		if (!tmp) {
-		    tmp = ChkConflict(&r,avoid,SETUP);
-		    if (!tmp) {
-			return r;
-		    } 
-		}
-		min = ALIGN(tmp,align_mask);
-	    }
-	}
-	res_range = res_range->next;
-    }
-    RANGE(r,0,0,ResEnd);
-    return r;
-}
-
-#define mt_max ~(memType)0
-#define length sizeof(memType) * 8
-/*
- * make_base() -- assign the lowest bits to the bits set in mask.
- *                example: mask 011010 val 0000110 -> 011000 
- */
-static memType
-make_base(memType val, memType mask)
-{
-    int i,j = 0;
-    memType ret = 0
-	;
-    for (i = 0;i<length;i++) {
-	if ((1 << i) & mask) {
-	    ret |= (((val >> j) & 1) << i);
-	    j++;
-	}
-    }
-    return ret;
-}
-
-/*
- * make_base() -- assign the bits set in mask to the lowest bits.
- *                example: mask 011010 , val 010010 -> 000011
- */
-static memType
-unmake_base(memType val, memType mask)
-{
-    int i,j = 0;
-    memType ret = 0;
-    
-    for (i = 0;i<length;i++) {
-	if ((1 << i) & mask) {
-	    ret |= (((val >> i) & 1) << j);
-	    j++;
-	}
-    }
-    return ret;
-}
-
-static memType
-fix_counter(memType val, memType old_mask, memType mask)
-{
-    mask = old_mask & mask;
-    
-    val = make_base(val,old_mask);
-    return unmake_base(val,mask);
-}
-
-_X_EXPORT resRange
-xf86GetSparse(unsigned long type,  memType fixed_bits,
-	  memType decode_mask, memType address_mask, resPtr avoid)
-{
-    resRange r = {ResEnd,0,0};
-    memType new_mask;
-    memType mask1;
-    memType base;
-    memType counter = 0;
-    memType counter1;
-    memType max_counter = ~(memType)0;
-    memType max_counter1;
-    memType conflict = 0;
-    
-    /* for sanity */
-    type = (type & ~(ResExtMask | ResBios | ResEstimated)) | ResSparse;
-
-    /*
-     * a sparse address consists of 3 parts:
-     * fixed_bits:   F bits which hard decoded by the hardware
-     * decode_bits:  D bits which are used to decode address
-     *                 but which may be set by software
-     * address_bits: A bits which are used to address the
-     *                 sparse range.
-     * the decode_mask marks all decode bits while the address_mask
-     * masks out all address_bits:
-     *                F D A
-     * decode_mask:   0 1 0
-     * address_mask:  1 1 0
-     */
-    decode_mask &= address_mask;
-    new_mask = decode_mask;
-
-    /*
-     * We start by setting the decode_mask bits to different values
-     * when a conflict is found the address_mask of the conflicting
-     * resource is returned. We remove those bits from decode_mask
-     * that are also set in the returned address_mask as they always
-     * conflict with resources which use them as address masks.
-     * The resoulting mask is stored in new_mask.
-     * We continue until no conflict is found or until we have
-     * tried all possible settings of new_mask.
-     */
-    while (1) {
-	base = make_base(counter,new_mask) | fixed_bits;
-	RANGE(r,base,address_mask,type);
-	conflict = ChkConflict(&r,Acc,SETUP);
-	if (!conflict) {
-	    conflict = ChkConflict(&r,avoid,SETUP);
-	    if (!conflict) {
-		return r;
-	    }
-	}
-	counter = fix_counter(counter,new_mask,conflict);
-	max_counter = fix_counter(max_counter,new_mask,conflict);
-	new_mask &= conflict;
-	counter ++;
-	if (counter > max_counter) break;
-    }
-    if (!new_mask && (new_mask == decode_mask)) {
-	RANGE(r,0,0,ResEnd);
-	return r;
-    }
-    /*
-     * if we haven't been successful we also try to modify those
-     * bits in decode_mask that are not at the same time set in
-     * new mask. These bits overlap with address_bits of some
-     * resources. If a conflict with a resource of this kind is
-     * found (ie. returned_mask & mask1 != mask1) with
-     * mask1 = decode_mask & ~new_mask we cannot
-     * use our choice of bits in the new_mask part. We try
-     * another choice.
-     */
-    max_counter = fix_counter(mt_max,mt_max,new_mask);
-    mask1 = decode_mask & ~new_mask;
-    max_counter1 = fix_counter(mt_max,mt_max,mask1);
-    counter = 0;
-    
-    while (1) {
-	counter1 = 0;
-	while (1) {
-	    base = make_base(counter1,mask1);
-	    RANGE(r,base,address_mask,type);
-	    conflict = ChkConflict(&r,Acc,SETUP);
-	    if (!conflict) {
-		conflict = ChkConflict(&r,avoid,SETUP);
-		if (!conflict) {
-		    return r;
-		}
-	    }
-	    counter1 ++;
-	    if ((mask1 & conflict) != mask1 || counter1 > max_counter1)
-		break;
-	}
-	counter ++;
-	if (counter > max_counter) break;
-    }
-    RANGE(r,0,0,ResEnd);
-    return r;
-}
-
-#undef length
-#undef mt_max
-
-/*
- * Resource registrarion
+ * Resource registration
  */
 
 static resList
@@ -1765,7 +1450,7 @@ xf86GetResourcesImplicitly(int entityIndex)
     case BUS_SBUS:
 	return NULL;
     case BUS_PCI:
-	return GetImplicitPciResources(entityIndex);
+	return NULL;
     case BUS_last:
 	return NULL;
     }
@@ -1846,41 +1531,44 @@ xf86RegisterResources(int entityIndex, resList list, unsigned long access)
 #ifdef DEBUG
     xf86MsgVerb(X_INFO, 3,"Resources after driver initialization\n");
     xf86PrintResList(3, Acc);
-    if (res) xf86MsgVerb(X_INFO, 3,
-			 "Failed Resources after driver initialization "
-			 "for Entity: %i\n",entityIndex);
-    xf86PrintResList(3, res);
 #endif
+    if (res) {
+	xf86MsgVerb(X_INFO, 3, "Failed to register resources:\n");
+	xf86PrintResList(3, res);
+    }
     return res;
     
 }
 
 static void
-busTypeSpecific(EntityPtr pEnt, xf86State state, xf86AccessPtr *acc_mem,
+busTypeSpecific(EntityPtr pEnt, xf86AccessPtr *acc_mem,
 		xf86AccessPtr *acc_io, xf86AccessPtr *acc_mem_io)
 {
-    pciAccPtr *ppaccp;
-    
     switch (pEnt->bus.type) {
     case BUS_ISA:
     case BUS_SBUS:
-	    *acc_mem = *acc_io = *acc_mem_io = &AccessNULL;
-	    break;
+	*acc_mem = *acc_io = *acc_mem_io = &AccessNULL;
 	break;
-    case BUS_PCI:
-	ppaccp = xf86PciAccInfo;
-	while (*ppaccp) {
-	    if ((*ppaccp)->busnum == pEnt->pciBusId.bus
-		&& (*ppaccp)->devnum == pEnt->pciBusId.device
-		&& (*ppaccp)->funcnum == pEnt->pciBusId.func) {
-		*acc_io = &(*ppaccp)->ioAccess;
-		*acc_mem = &(*ppaccp)->memAccess;
-		*acc_mem_io = &(*ppaccp)->io_memAccess;
-		break;
-	    }
-	    ppaccp++;
+    case BUS_PCI: {
+	struct pci_device *const dev = pEnt->bus.id.pci;
+
+	if ((dev != NULL) && ((void *)dev->user_data != NULL)) {
+	    pciAccPtr const paccp = (pciAccPtr) dev->user_data;
+	    
+	    *acc_io = & paccp->ioAccess;
+	    *acc_mem = & paccp->memAccess;
+	    *acc_mem_io = & paccp->io_memAccess;
+	}
+	else {
+	    /* FIXME: This is an error path.  We should probably have an
+	     * FIXME: assertion here or something.
+	     */
+	    *acc_io = NULL;
+	    *acc_mem = NULL;
+	    *acc_mem_io = NULL;
 	}
 	break;
+    }
     default:
 	*acc_mem = *acc_io = *acc_mem_io = NULL;
 	break;
@@ -1896,7 +1584,7 @@ setAccess(EntityPtr pEnt, xf86State state)
     xf86AccessPtr org_mem = NULL, org_io = NULL, org_mem_io = NULL;
     int prop;
     
-    busTypeSpecific(pEnt,state,&acc_mem,&acc_io,&acc_mem_io);
+    busTypeSpecific(pEnt, &acc_mem, &acc_io, &acc_mem_io);
 
     /* The replacement function needs to handle _all_ shared resources */
     /* unless they are handeled locally and disabled otherwise         */
@@ -1955,7 +1643,7 @@ setAccess(EntityPtr pEnt, xf86State state)
 	if (pEnt->rac->old) {
 	    /* give it to the driver, leave state disabled */
 	    pEnt->rac->old->io = org_io;
-	} else if (org_io->AccessEnable) {
+	} else {
 	    /* driver doesn't want it - enable generic access */
 	    org_io->AccessEnable(org_io->arg);
 	}
@@ -1966,7 +1654,7 @@ setAccess(EntityPtr pEnt, xf86State state)
 	if (pEnt->rac->old) {
 	    /* give it to the driver, leave state disabled */
 	    pEnt->rac->old->io_mem = org_mem_io;
-	} else if (org_mem_io->AccessEnable) {
+	} else {
 	    /* driver doesn't want it - enable generic access */
 	    org_mem_io->AccessEnable(org_mem_io->arg);
 	}
@@ -1977,7 +1665,7 @@ setAccess(EntityPtr pEnt, xf86State state)
 	if (pEnt->rac->old) {
 	    /* give it to the driver, leave state disabled */
 	    pEnt->rac->old->mem = org_mem;
-	} else if (org_mem->AccessEnable) {
+	} else {
 	    /* driver doesn't want it - enable generic access */
 	    org_mem->AccessEnable(org_mem->arg);
 	}
@@ -1985,27 +1673,26 @@ setAccess(EntityPtr pEnt, xf86State state)
 
     if (!(prop & NEED_MEM_SHARED)){
 	if (prop & NEED_MEM) {
-	    if (acc_mem && acc_mem->AccessEnable)
+	    if (acc_mem)
 		acc_mem->AccessEnable(acc_mem->arg);
 	} else {
-	    if (acc_mem && acc_mem->AccessDisable)
+	    if (acc_mem)
 		acc_mem->AccessDisable(acc_mem->arg);
 	}
     }
 
     if (!(prop & NEED_IO_SHARED)) {
 	if (prop & NEED_IO) {
-	    if (acc_io && acc_io->AccessEnable)
-	    acc_io->AccessEnable(acc_io->arg);
+	    if (acc_io)
+		acc_io->AccessEnable(acc_io->arg);
 	} else {
-	    if (acc_io && acc_io->AccessDisable)
+	    if (acc_io)
 		acc_io->AccessDisable(acc_io->arg);
 	}
     }
 
     /* disable shared resources */
-    if (pEnt->access->pAccess 
-	&& pEnt->access->pAccess->AccessDisable)
+    if (pEnt->access->pAccess)
 	pEnt->access->pAccess->AccessDisable(pEnt->access->pAccess->arg);
 
     /*
@@ -2042,7 +1729,7 @@ SetSIGIOForState(xf86State state)
     }
 }
 
-_X_EXPORT void
+void
 xf86EnterServerState(xf86State state)
 {
     EntityPtr pEnt;
@@ -2449,15 +2136,6 @@ xf86PostProbe(void)
 #endif
     }
     xf86FreeResList(acc);
-#if !(defined(__alpha__) && defined(linux)) && \
-    !(defined(__ia64__) && defined(linux)) && \
-    !(defined(__sparc64__) && defined(__OpenBSD__))
-    /* 
-     * No need to validate on Alpha Linux or OpenBSD/sparc64, 
-     * trust the kernel.
-     */
-    ValidatePci();
-#endif
     
     xf86MsgVerb(X_INFO, 3, "resource ranges after probing:\n");
     xf86PrintResList(3, Acc);
@@ -2507,13 +2185,6 @@ checkRequiredResources(int entityIndex)
 	pAcc = pAcc->next;
     }
     
-    /* check if we can separately enable mem/io resources */
-    /* XXX we still need to find out how to set this yet  */
-    if ( ((pEnt->entityProp & NO_SEPARATE_MEM_FROM_IO)
-	  && (pEnt->entityProp & NEED_MEM_SHARED))
-	 || ((pEnt->entityProp & NO_SEPARATE_IO_FROM_MEM)
-	     && (pEnt->entityProp & NEED_IO_SHARED)) )
-	pEnt->entityProp |= NEED_SHARED;
     /*
      * After we have checked all resources of an entity agains any
      * other resource we know if the entity need this resource type
@@ -2521,13 +2192,11 @@ checkRequiredResources(int entityIndex)
      * so no need to share it either. 
      */
     if ((pEnt->entityProp & NEED_MEM_SHARED)
-	&& (!(pEnt->entityProp & NEED_MEM))
-	&& (!(pEnt->entityProp & NO_SEPARATE_MEM_FROM_IO)))
+	&& (!(pEnt->entityProp & NEED_MEM)))
 	pEnt->entityProp &= ~(unsigned long)NEED_MEM_SHARED;
 
     if ((pEnt->entityProp & NEED_IO_SHARED)
-	&& (!(pEnt->entityProp & NEED_IO))
-	&& (!(pEnt->entityProp & NO_SEPARATE_IO_FROM_MEM)))
+	&& (!(pEnt->entityProp & NEED_IO)))
 	pEnt->entityProp &= ~(unsigned long)NEED_IO_SHARED;
 }
 
@@ -2976,14 +2645,16 @@ xf86FindPrimaryDevice()
         CheckGenericGA();
     if (primaryBus.type != BUS_NONE) {
 	char *bus;
-	char *loc = xnfcalloc(1,9);
-	if (loc == NULL) return;
+	char loc[16];
 
 	switch (primaryBus.type) {
 	case BUS_PCI:
 	    bus = "PCI";
-	    sprintf(loc," %2.2x:%2.2x:%1.1x",primaryBus.id.pci.bus,
-	    primaryBus.id.pci.device,primaryBus.id.pci.func);
+	    snprintf(loc, sizeof(loc), " %2.2x@%2.2x:%2.2x:%1.1x",
+		     primaryBus.id.pci->bus,
+		     primaryBus.id.pci->domain,
+		     primaryBus.id.pci->dev,
+		     primaryBus.id.pci->func);
 	    break;
 	case BUS_ISA:
 	    bus = "ISA";
@@ -2991,20 +2662,18 @@ xf86FindPrimaryDevice()
 	    break;
 	case BUS_SBUS:
 	    bus = "SBUS";
-	    sprintf(loc," %2.2x",primaryBus.id.sbus.fbNum);
+	    snprintf(loc, sizeof(loc), " %2.2x", primaryBus.id.sbus.fbNum);
 	    break;
 	default:
 	    bus = "";
 	    loc[0] = '\0';
 	}
-	
+
 	xf86MsgVerb(X_INFO, 2, "Primary Device is: %s%s\n",bus,loc);
-	xfree(loc);
     }
-    
 }
 
-#if !defined(__sparc) && !defined(__sparc__) && !defined(__powerpc__) && !defined(__mips__) && !defined(__arm__)
+#if !defined(__sparc) && !defined(__sparc__) && !defined(__powerpc__) && !defined(__mips__) && !defined(__arm__) && !defined(__m32r__)
 #include "vgaHW.h"
 #include "compiler.h"
 #endif
@@ -3016,7 +2685,7 @@ static void
 CheckGenericGA()
 {
 /* This needs to be changed for multiple domains */
-#if !defined(__sparc__) && !defined(__sparc) && !defined(__powerpc__) && !defined(__mips__) && !defined(__ia64__) && !defined(__arm__) && !defined(__s390__)
+#if !defined(__sparc__) && !defined(__sparc) && !defined(__powerpc__) && !defined(__mips__) && !defined(__ia64__) && !defined(__arm__) && !defined(__s390__) && !defined(__m32r__)
     IOADDRESS GenericIOBase = VGAHW_GET_IOBASE();
     CARD8 CurrentValue, TestValue;
 
@@ -3037,7 +2706,7 @@ CheckGenericGA()
 #endif
 }
 
-_X_EXPORT Bool
+Bool
 xf86NoSharedResources(int screenIndex,resType res)
 {
     int j;

@@ -39,9 +39,7 @@
 #include "rootless.h"
 #include "fb.h"
 
-#ifdef SHAPE
 #include "scrnintstr.h"
-#endif /* SHAPE */
 
 #ifdef RENDER
 #include "picturestr.h"
@@ -57,10 +55,10 @@
 
 
 // Global variables
-extern int rootlessGCPrivateIndex;
-extern int rootlessScreenPrivateIndex;
-extern int rootlessWindowPrivateIndex;
-extern int rootlessWindowOldPixmapPrivateIndex;
+extern DevPrivateKey rootlessGCPrivateKey;
+extern DevPrivateKey rootlessScreenPrivateKey;
+extern DevPrivateKey rootlessWindowPrivateKey;
+extern DevPrivateKey rootlessWindowOldPixmapPrivateKey;
 
 
 // RootlessGCRec: private per-gc data
@@ -92,8 +90,6 @@ typedef struct _RootlessScreenRec {
     ChangeWindowAttributesProcPtr ChangeWindowAttributes;
 
     CreateGCProcPtr CreateGC;
-    PaintWindowBackgroundProcPtr PaintWindowBackground;
-    PaintWindowBorderProcPtr PaintWindowBorder;
     CopyWindowProcPtr CopyWindow;
     GetImageProcPtr GetImage;
     SourceValidateProcPtr SourceValidate;
@@ -101,9 +97,7 @@ typedef struct _RootlessScreenRec {
     MarkOverlappedWindowsProcPtr MarkOverlappedWindows;
     ValidateTreeProcPtr ValidateTree;
 
-#ifdef SHAPE
     SetShapeProcPtr SetShape;
-#endif
 
 #ifdef RENDER
     CompositeProcPtr Composite;
@@ -146,12 +140,17 @@ typedef struct _RootlessScreenRec {
 
 // Accessors for screen and window privates
 
-#define SCREENREC(pScreen) \
-   ((RootlessScreenRec *)(pScreen)->devPrivates[rootlessScreenPrivateIndex].ptr)
+#define SCREENREC(pScreen) ((RootlessScreenRec *) \
+    dixLookupPrivate(&(pScreen)->devPrivates, rootlessScreenPrivateKey))
 
-#define WINREC(pWin) \
-    ((RootlessWindowRec *)(pWin)->devPrivates[rootlessWindowPrivateIndex].ptr)
+#define SETSCREENREC(pScreen, v) \
+    dixSetPrivate(&(pScreen)->devPrivates, rootlessScreenPrivateKey, v)
 
+#define WINREC(pWin) ((RootlessWindowRec *) \
+    dixLookupPrivate(&(pWin)->devPrivates, rootlessWindowPrivateKey))
+
+#define SETWINREC(pWin, v) \
+    dixSetPrivate(&(pWin)->devPrivates, rootlessWindowPrivateKey, v)
 
 // Call a rootless implementation function.
 // Many rootless implementation functions are allowed to be NULL.
@@ -239,7 +238,7 @@ extern RegionRec rootlessHugeRoot;
                             ((int)(_x) * _pPix->drawable.bitsPerPixel/8 +   \
                              (int)(_y) * _pPix->devKind);                   \
     if (_pPix->drawable.bitsPerPixel != FB_UNIT) {                          \
-        unsigned _diff = ((unsigned) _pPix->devPrivate.ptr) &               \
+        size_t _diff = ((size_t) _pPix->devPrivate.ptr) &               \
                          (FB_UNIT / CHAR_BIT - 1);                          \
         _pPix->devPrivate.ptr = (char *) (_pPix->devPrivate.ptr) -          \
                                 _diff;                                      \
