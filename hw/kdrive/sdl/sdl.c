@@ -329,7 +329,7 @@ static void sdlMouseFini(KdPointerInfo *pi)
 void InitCard(char *name)
 {
 	KdCardAttr attr;
-        KdCardInfoAdd (&sdlFuncs, &attr, 0);
+//        KdCardInfoAdd (&sdlFuncs, &attr, 0);
 #ifdef DEBUG
 	printf("InitCard: %s\n", name);
 #endif

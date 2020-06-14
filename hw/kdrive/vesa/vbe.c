@@ -370,7 +370,7 @@ VbeMapFramebuffer(Vm86InfoPtr vi, VbeInfoPtr vbe, int mode, int *ret_size, CARD3
     if(after == pagesize)
         after = 0;
 
-    fb = KdMapDevice (vmib.PhysBasePtr - before, before + size + after);
+    fb = 0; ///KdMapDevice (vmib.PhysBasePtr - before, before + size + after);
     
     if(fb == 0)
     {
@@ -408,9 +408,9 @@ VbeUnmapFramebuffer(Vm86InfoPtr vi, VbeInfoPtr vbe, int mode, void *fb)
 
     fb = (void *) ((char *) fb - before);
     
-    KdUnmapDevice (fb, before + size + after);
-    KdResetMappedMode (vmib.PhysBasePtr - before, before + size + after,
-		     KD_MAPPED_MODE_FRAMEBUFFER);
+//    KdUnmapDevice (fb, before + size + after);
+//    KdResetMappedMode (vmib.PhysBasePtr - before, before + size + after,
+//		     KD_MAPPED_MODE_FRAMEBUFFER);
 }
 
 int 
