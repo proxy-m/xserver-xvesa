@@ -55,6 +55,13 @@
 #include "dispatch.h"
 #include "extension_string.h"
 
+/* RTLD_LOCAL is not defined on Cygwin */
+#ifdef __CYGWIN__
+#ifndef RTLD_LOCAL
+#define RTLD_LOCAL 0
+#endif
+#endif
+
 typedef struct __GLXDRIscreen   __GLXDRIscreen;
 typedef struct __GLXDRIcontext  __GLXDRIcontext;
 typedef struct __GLXDRIdrawable __GLXDRIdrawable;
@@ -95,11 +102,13 @@ __glXDRIdrawableDestroy(__GLXdrawable *drawable)
     FreeScratchGC(private->gc);
     FreeScratchGC(private->swapgc);
 
+    __glXDrawableRelease(drawable);
+
     xfree(private);
 }
 
 static GLboolean
-__glXDRIdrawableSwapBuffers(__GLXdrawable *drawable)
+__glXDRIdrawableSwapBuffers(ClientPtr client, __GLXdrawable *drawable)
 {
     __GLXDRIdrawable *private = (__GLXDRIdrawable *) drawable;
     const __DRIcoreExtension *core = private->screen->core;
@@ -490,7 +499,8 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
 					   screen);
 
     if (screen->driScreen == NULL) {
-	LogMessage(X_ERROR, "AIGLX error: Calling driver entry point failed");
+	LogMessage(X_ERROR,
+		   "AIGLX error: Calling driver entry point failed\n");
 	goto handle_error;
     }
 
@@ -499,6 +509,9 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     screen->base.fbconfigs = glxConvertConfigs(screen->core, driConfigs);
 
     __glXScreenInit(&screen->base, pScreen);
+
+    screen->base.GLXmajor = 1;
+    screen->base.GLXminor = 4;
 
     LogMessage(X_INFO,
 	       "AIGLX: Loaded and initialized %s\n", filename);
@@ -516,7 +529,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     return NULL;
 }
 
-__GLXprovider __glXDRISWRastProvider = {
+_X_EXPORT __GLXprovider __glXDRISWRastProvider = {
     __glXDRIscreenProbe,
     "DRISWRAST",
     NULL

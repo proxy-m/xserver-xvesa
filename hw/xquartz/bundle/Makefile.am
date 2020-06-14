@@ -1,12 +1,31 @@
+include cpprules.in
+
+CPP_FILES_FLAGS = \
+	-DLAUNCHD_ID_PREFIX="$(LAUNCHD_ID_PREFIX)" \
+	-DAPPLE_APPLICATION_NAME="$(APPLE_APPLICATION_NAME)"
+
+if XQUARTZ_SPARKLE
+CPP_FILES_FLAGS += -DXQUARTZ_SPARKLE
+endif
+
 install-data-hook:
-	./mk_bundke.sh $(DESTDIR)$(APPLE_APPLICATIONS_DIR)/X11.app
+	$(srcdir)/mk_bundke.sh $(srcdir) $(builddir) $(DESTDIR)$(APPLE_APPLICATIONS_DIR)/$(APPLE_APPLICATION_NAME).app install
+
+uninstall-hook:
+	$(RM) -rf $(DESTDIR)$(APPLE_APPLICATIONS_DIR)/$(APPLE_APPLICATION_NAME).app	
+
+noinst_PRE = Info.plist.cpp
+noinst_DATA = $(noinst_PRE:plist.cpp=plist)
+
+CLEANFILES = $(noinst_DATA)
 
 resourcedir=$(libdir)/X11/xserver
 resource_DATA = Xquartz.plist
 
 EXTRA_DIST = \
 	mk_bundke.sh \
-	Info.plist \
+	X11.sh \
+	Info.plist.cpp \
 	PkgInfo \
 	$(resource_DATA) \
 	Resources/da.lproj/InfoPlist.strings \

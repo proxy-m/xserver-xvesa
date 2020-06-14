@@ -40,8 +40,7 @@
 #include "xf86Priv.h"
 #include "xf86RandR12.h"
 #include "X11/extensions/render.h"
-#define DPMS_SERVER
-#include "X11/extensions/dpms.h"
+#include "X11/extensions/dpmsconst.h"
 #include "X11/Xatom.h"
 #ifdef RENDER
 #include "picturestr.h"
@@ -55,7 +54,7 @@
 
 int xf86CrtcConfigPrivateIndex = -1;
 
-_X_EXPORT void
+void
 xf86CrtcConfigInit (ScrnInfoPtr scrn,
 		    const xf86CrtcConfigFuncsRec *funcs)
 {
@@ -70,7 +69,7 @@ xf86CrtcConfigInit (ScrnInfoPtr scrn,
     scrn->privates[xf86CrtcConfigPrivateIndex].ptr = config;
 }
  
-_X_EXPORT void
+void
 xf86CrtcSetSizeRange (ScrnInfoPtr scrn,
 		      int minWidth, int minHeight,
 		      int maxWidth, int maxHeight)
@@ -86,7 +85,7 @@ xf86CrtcSetSizeRange (ScrnInfoPtr scrn,
 /*
  * Crtc functions
  */
-_X_EXPORT xf86CrtcPtr
+xf86CrtcPtr
 xf86CrtcCreate (ScrnInfoPtr		scrn,
 		const xf86CrtcFuncsRec	*funcs)
 {
@@ -96,6 +95,7 @@ xf86CrtcCreate (ScrnInfoPtr		scrn,
     crtc = xcalloc (sizeof (xf86CrtcRec), 1);
     if (!crtc)
 	return NULL;
+    crtc->version = XF86_CRTC_VERSION;
     crtc->scrn = scrn;
     crtc->funcs = funcs;
 #ifdef RANDR_12_INTERFACE
@@ -103,6 +103,29 @@ xf86CrtcCreate (ScrnInfoPtr		scrn,
 #endif
     crtc->rotation = RR_Rotate_0;
     crtc->desiredRotation = RR_Rotate_0;
+    pixman_transform_init_identity (&crtc->crtc_to_framebuffer);
+    pixman_f_transform_init_identity (&crtc->f_crtc_to_framebuffer);
+    pixman_f_transform_init_identity (&crtc->f_framebuffer_to_crtc);
+    crtc->filter = NULL;
+    crtc->params = NULL;
+    crtc->nparams = 0;
+    crtc->filter_width = 0;
+    crtc->filter_height = 0;
+    crtc->transform_in_use = FALSE;
+    crtc->transformPresent = FALSE;
+    crtc->desiredTransformPresent = FALSE;
+    memset (&crtc->bounds, '\0', sizeof (crtc->bounds));
+
+    /* Preallocate gamma at a sensible size. */
+    crtc->gamma_size = 256;
+    crtc->gamma_red = malloc(3 * crtc->gamma_size * sizeof (CARD16));
+    if (!crtc->gamma_red) {
+	xfree (crtc);
+	return NULL;
+    }
+    crtc->gamma_green = crtc->gamma_red + crtc->gamma_size;
+    crtc->gamma_blue = crtc->gamma_green + crtc->gamma_size;
+
     if (xf86_config->crtc)
 	crtcs = xrealloc (xf86_config->crtc,
 			  (xf86_config->num_crtc + 1) * sizeof (xf86CrtcPtr));
@@ -118,7 +141,7 @@ xf86CrtcCreate (ScrnInfoPtr		scrn,
     return crtc;
 }
 
-_X_EXPORT void
+void
 xf86CrtcDestroy (xf86CrtcPtr crtc)
 {
     xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(crtc->scrn);
@@ -134,6 +157,9 @@ xf86CrtcDestroy (xf86CrtcPtr crtc)
 	    xf86_config->num_crtc--;
 	    break;
 	}
+    if (crtc->params)
+	xfree (crtc->params);
+    free(crtc->gamma_red);
     xfree (crtc);
 }
 
@@ -142,7 +168,7 @@ xf86CrtcDestroy (xf86CrtcPtr crtc)
  * Return whether any outputs are connected to the specified pipe
  */
 
-_X_EXPORT Bool
+Bool
 xf86CrtcInUse (xf86CrtcPtr crtc)
 {
     ScrnInfoPtr		pScrn = crtc->scrn;
@@ -155,7 +181,7 @@ xf86CrtcInUse (xf86CrtcPtr crtc)
     return FALSE;
 }
 
-_X_EXPORT void
+void
 xf86CrtcSetScreenSubpixelOrder (ScreenPtr pScreen)
 {
 #ifdef RENDER
@@ -223,9 +249,9 @@ xf86CrtcSetScreenSubpixelOrder (ScreenPtr pScreen)
 /**
  * Sets the given video mode on the given crtc
  */
-_X_EXPORT Bool
-xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
-		 int x, int y)
+Bool
+xf86CrtcSetModeTransform (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
+			  RRTransformPtr transform, int x, int y)
 {
     ScrnInfoPtr		scrn = crtc->scrn;
     xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -236,26 +262,32 @@ xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
     DisplayModeRec	saved_mode;
     int			saved_x, saved_y;
     Rotation		saved_rotation;
+    RRTransformRec	saved_transform;
+    Bool		saved_transform_present;
 
-    if (crtc->funcs->set_mode_major)
-	return crtc->funcs->set_mode_major(crtc, mode, rotation, x, y);
-	
     crtc->enabled = xf86CrtcInUse (crtc);
-    
+
+    /* We only hit this if someone explicitly sends a "disabled" modeset. */
     if (!crtc->enabled)
     {
-	/* XXX disable crtc? */
+	/* Check everything for stuff that should be off. */
+	xf86DisableUnusedFunctions(scrn);
 	return TRUE;
     }
 
     adjusted_mode = xf86DuplicateMode(mode);
 
-    didLock = crtc->funcs->lock (crtc);
 
     saved_mode = crtc->mode;
     saved_x = crtc->x;
     saved_y = crtc->y;
     saved_rotation = crtc->rotation;
+    if (crtc->transformPresent) {
+	RRTransformInit (&saved_transform);
+	RRTransformCopy (&saved_transform, &crtc->transform);
+    }
+    saved_transform_present = crtc->transformPresent;
+
     /* Update crtc values up front so the driver can rely on them for mode
      * setting.
      */
@@ -263,33 +295,18 @@ xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
     crtc->x = x;
     crtc->y = y;
     crtc->rotation = rotation;
+    if (transform) {
+	RRTransformCopy (&crtc->transform, transform);
+	crtc->transformPresent = TRUE;
+    } else
+	crtc->transformPresent = FALSE;
 
-    /* Shift offsets that move us out of virtual size */
-    if (x + mode->HDisplay > xf86_config->maxWidth ||
-	y + mode->VDisplay > xf86_config->maxHeight)
-    {
-	if (x + mode->HDisplay > xf86_config->maxWidth)
-	    crtc->x = xf86_config->maxWidth - mode->HDisplay;
-	if (y + mode->VDisplay > xf86_config->maxHeight)
-	    crtc->y = xf86_config->maxHeight - mode->VDisplay;
-	if (crtc->x < 0 || crtc->y < 0)
-	{
-	    xf86DrvMsg (scrn->scrnIndex, X_ERROR,
-			"Mode %dx%d does not fit virtual size %dx%d - "
-			"internal error\n", mode->HDisplay, mode->VDisplay,
-			xf86_config->maxWidth, xf86_config->maxHeight);
-	    goto done;
-	}
-	xf86DrvMsg (scrn->scrnIndex, X_ERROR,
-		    "Mode %dx%d+%d+%d does not fit virtual size %dx%d - "
-		    "offset updated to +%d+%d\n",
-		    mode->HDisplay, mode->VDisplay, x, y,
-		    xf86_config->maxWidth, xf86_config->maxHeight,
-		    crtc->x, crtc->y);
+    if (crtc->funcs->set_mode_major) {
+	ret = crtc->funcs->set_mode_major(crtc, mode, rotation, x, y);
+	goto done;
     }
 
-    /* XXX short-circuit changes to base location only */
-    
+    didLock = crtc->funcs->lock (crtc);
     /* Pass our mode to the outputs and the CRTC to give them a chance to
      * adjust it according to limitations or output properties, and also
      * a chance to reject the mode entirely.
@@ -309,9 +326,8 @@ xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
 	goto done;
     }
 
-    if (!xf86CrtcRotate (crtc, mode, rotation)) {
+    if (!xf86CrtcRotate (crtc))
 	goto done;
-    }
 
     /* Prepare the outputs and CRTCs before setting the mode. */
     for (i = 0; i < xf86_config->num_output; i++) {
@@ -337,38 +353,73 @@ xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
 	    output->funcs->mode_set(output, mode, adjusted_mode);
     }
 
+    /* Only upload when needed, to avoid unneeded delays. */
+    if (!crtc->active && crtc->funcs->gamma_set)
+	crtc->funcs->gamma_set(crtc, crtc->gamma_red, crtc->gamma_green,
+                                            crtc->gamma_blue, crtc->gamma_size);
+
     /* Now, enable the clocks, plane, pipe, and outputs that we set up. */
     crtc->funcs->commit(crtc);
     for (i = 0; i < xf86_config->num_output; i++) 
     {
 	xf86OutputPtr output = xf86_config->output[i];
 	if (output->crtc == crtc)
-	{
 	    output->funcs->commit(output);
-#ifdef RANDR_12_INTERFACE
-	    if (output->randr_output)
-		RRPostPendingProperties (output->randr_output);
-#endif
-	}
     }
 
-    /* XXX free adjustedmode */
     ret = TRUE;
-    if (scrn->pScreen)
-	xf86CrtcSetScreenSubpixelOrder (scrn->pScreen);
 
 done:
-    if (!ret) {
+    if (ret) {
+	crtc->active = TRUE;
+	if (scrn->pScreen)
+	    xf86CrtcSetScreenSubpixelOrder (scrn->pScreen);
+    } else {
 	crtc->x = saved_x;
 	crtc->y = saved_y;
 	crtc->rotation = saved_rotation;
 	crtc->mode = saved_mode;
+	if (saved_transform_present)
+	    RRTransformCopy (&crtc->transform, &saved_transform);
+	crtc->transformPresent = saved_transform_present;
     }
+
+    if (adjusted_mode->name)
+	    xfree(adjusted_mode->name);
+    xfree(adjusted_mode);
 
     if (didLock)
 	crtc->funcs->unlock (crtc);
 
     return ret;
+}
+
+/**
+ * Sets the given video mode on the given crtc, but without providing
+ * a transform
+ */
+Bool
+xf86CrtcSetMode (xf86CrtcPtr crtc, DisplayModePtr mode, Rotation rotation,
+		 int x, int y)
+{
+    return xf86CrtcSetModeTransform (crtc, mode, rotation, NULL, x, y);
+}
+
+/**
+ * Pans the screen, does not change the mode
+ */
+void
+xf86CrtcSetOrigin (xf86CrtcPtr crtc, int x, int y)
+{
+    crtc->x = x;
+    crtc->y = y;
+    if (crtc->funcs->set_origin) {
+	if (!xf86CrtcRotate (crtc))
+	    return;
+	crtc->funcs->set_origin (crtc, x, y);
+    }
+    else
+	xf86CrtcSetMode (crtc, &crtc->mode, crtc->rotation, x, y);
 }
 
 /*
@@ -390,6 +441,8 @@ typedef enum {
     OPTION_MAX_CLOCK,
     OPTION_IGNORE,
     OPTION_ROTATE,
+    OPTION_PANNING,
+    OPTION_PRIMARY,
 } OutputOpts;
 
 static OptionInfoRec xf86OutputOptions[] = {
@@ -405,6 +458,8 @@ static OptionInfoRec xf86OutputOptions[] = {
     {OPTION_MAX_CLOCK,	    "MaxClock",		OPTV_FREQ,    {0}, FALSE },
     {OPTION_IGNORE,	    "Ignore",		OPTV_BOOLEAN, {0}, FALSE },
     {OPTION_ROTATE,	    "Rotate",		OPTV_STRING,  {0}, FALSE },
+    {OPTION_PANNING,	    "Panning",		OPTV_STRING,  {0}, FALSE },
+    {OPTION_PRIMARY,	    "Primary",		OPTV_BOOLEAN, {0}, FALSE },
     {-1,		    NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
@@ -413,7 +468,7 @@ enum {
 };
 
 static OptionInfoRec xf86DeviceOptions[] = {
-    {OPTION_MODEDEBUG,	    "ModeDebug",	OPTV_STRING,  {0}, FALSE },
+    {OPTION_MODEDEBUG,	    "ModeDebug",	OPTV_BOOLEAN,  {0}, FALSE },
     {-1,		    NULL,		OPTV_NONE,    {0}, FALSE },
 };
 
@@ -529,7 +584,7 @@ xf86OutputInitialRotation (xf86OutputPtr output)
     return RR_Rotate_0;
 }
 
-_X_EXPORT xf86OutputPtr
+xf86OutputPtr
 xf86OutputCreate (ScrnInfoPtr		    scrn,
 		  const xf86OutputFuncsRec  *funcs,
 		  const char		    *name)
@@ -537,6 +592,7 @@ xf86OutputCreate (ScrnInfoPtr		    scrn,
     xf86OutputPtr	output, *outputs;
     xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(scrn);
     int			len;
+    Bool		primary;
 
     if (name)
 	len = strlen (name) + 1;
@@ -582,14 +638,26 @@ xf86OutputCreate (ScrnInfoPtr		    scrn,
 	xfree (output);
 	return NULL;
     }
-    
+
     xf86_config->output = outputs;
-    xf86_config->output[xf86_config->num_output++] = output;
-    
+
+    if (xf86GetOptValBool (output->options, OPTION_PRIMARY, &primary) && primary)
+    {
+	memmove(xf86_config->output + 1, xf86_config->output,
+		xf86_config->num_output * sizeof (xf86OutputPtr));
+	xf86_config->output[0] = output;
+    }
+    else
+    {
+	xf86_config->output[xf86_config->num_output] = output;
+    }
+
+    xf86_config->num_output++;
+
     return output;
 }
 
-_X_EXPORT Bool
+Bool
 xf86OutputRename (xf86OutputPtr output, const char *name)
 {
     int	    len = strlen(name) + 1;
@@ -608,7 +676,7 @@ xf86OutputRename (xf86OutputPtr output, const char *name)
     return TRUE;
 }
 
-_X_EXPORT void
+void
 xf86OutputUseScreenMonitor (xf86OutputPtr output, Bool use_screen_monitor)
 {
     if (use_screen_monitor != output->use_screen_monitor)
@@ -618,7 +686,7 @@ xf86OutputUseScreenMonitor (xf86OutputPtr output, Bool use_screen_monitor)
     }
 }
 
-_X_EXPORT void
+void
 xf86OutputDestroy (xf86OutputPtr output)
 {
     ScrnInfoPtr		scrn = output->scrn;
@@ -694,7 +762,6 @@ xf86CrtcCloseScreen (int index, ScreenPtr screen)
 /*
  * Called at ScreenInit time to set up
  */
-_X_EXPORT
 #ifdef RANDR_13_INTERFACE
 int
 #else
@@ -719,11 +786,17 @@ xf86CrtcScreenInit (ScreenPtr screen)
 	    break;
     }
     if (c == config->num_crtc)
+    {
 	xf86RandR12SetRotations (screen, RR_Rotate_0 | RR_Rotate_90 |
 				 RR_Rotate_180 | RR_Rotate_270 |
 				 RR_Reflect_X | RR_Reflect_Y);
+	xf86RandR12SetTransformSupport (screen, TRUE);
+    }
     else
+    {
 	xf86RandR12SetRotations (screen, RR_Rotate_0);
+	xf86RandR12SetTransformSupport (screen, FALSE);
+    }
     
     /* Wrap CreateScreenResources so we can initialize the RandR code */
     config->CreateScreenResources = screen->CreateScreenResources;
@@ -732,6 +805,9 @@ xf86CrtcScreenInit (ScreenPtr screen)
     config->CloseScreen = screen->CloseScreen;
     screen->CloseScreen = xf86CrtcCloseScreen;
     
+#ifdef XFreeXDGA
+    _xf86_di_dga_init_internal(screen);
+#endif
 #ifdef RANDR_13_INTERFACE
     return RANDR_INTERFACE_VERSION;
 #else
@@ -914,7 +990,7 @@ xf86PickCrtcs (ScrnInfoPtr	scrn,
 	     * see if they can be cloned
 	     */
 	    if (xf86ModesEqual (modes[o], modes[n]) &&
-		config->output[0]->initial_rotation == config->output[n]->initial_rotation &&
+		config->output[o]->initial_rotation == config->output[n]->initial_rotation &&
 		config->output[o]->initial_x == config->output[n]->initial_x &&
 		config->output[o]->initial_y == config->output[n]->initial_y)
 	    {
@@ -1248,30 +1324,55 @@ xf86InitialOutputPositions (ScrnInfoPtr scrn, DisplayModePtr *modes)
     return TRUE;
 }
 
-/*
- * XXX walk the monitor mode list and prune out duplicates that
- * are inserted by xf86DDCMonitorSet. In an ideal world, that
- * function would do this work by itself.
- */
-
 static void
-xf86PruneDuplicateMonitorModes (MonPtr Monitor)
+xf86InitialPanning (ScrnInfoPtr scrn)
 {
-    DisplayModePtr  master, clone, next;
-
-    for (master = Monitor->Modes; 
-	 master && master != Monitor->Last; 
-	 master = master->next)
+    xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
+    int			o;
+    
+    for (o = 0; o < config->num_output; o++)
     {
-	for (clone = master->next; clone && clone != Monitor->Modes; clone = next)
-	{
-	    next = clone->next;
-	    if (xf86ModesEqual (master, clone))
-	    {
-		if (Monitor->Last == clone)
-		    Monitor->Last = clone->prev;
-		xf86DeleteMode (&Monitor->Modes, clone);
-	    }
+	xf86OutputPtr	output = config->output[o];
+	char	       *panning = xf86GetOptValString (output->options, OPTION_PANNING);
+	int		width, height, left, top;
+	int		track_width, track_height, track_left, track_top;
+	int		brdr[4];
+
+	memset (&output->initialTotalArea,    0, sizeof(BoxRec));
+	memset (&output->initialTrackingArea, 0, sizeof(BoxRec));
+	memset (output->initialBorder,        0, 4*sizeof(INT16));
+
+	if (! panning)
+	    continue;
+
+	switch (sscanf (panning, "%dx%d+%d+%d/%dx%d+%d+%d/%d/%d/%d/%d",
+			&width, &height, &left, &top,
+			&track_width, &track_height, &track_left, &track_top,
+			&brdr[0], &brdr[1], &brdr[2], &brdr[3])) {
+	case 12:
+	    output->initialBorder[0] = brdr[0];
+	    output->initialBorder[1] = brdr[1];
+	    output->initialBorder[2] = brdr[2];
+	    output->initialBorder[3] = brdr[3];
+	    /* fall through */
+	case 8:
+	    output->initialTrackingArea.x1 = track_left;
+	    output->initialTrackingArea.y1 = track_top;
+	    output->initialTrackingArea.x2 = track_left + track_width;
+	    output->initialTrackingArea.y2 = track_top  + track_height;
+	    /* fall through */
+	case 4:
+	    output->initialTotalArea.x1 = left;
+	    output->initialTotalArea.y1 = top;
+	    /* fall through */
+	case 2:
+	    output->initialTotalArea.x2 = output->initialTotalArea.x1 + width;
+	    output->initialTotalArea.y2 = output->initialTotalArea.y1 + height;
+	    break;
+	default:
+	    xf86DrvMsg (scrn->scrnIndex, X_ERROR,
+			"Broken panning specification '%s' for output %s in config file\n",
+			panning, output->name);
 	}
     }
 }
@@ -1394,7 +1495,43 @@ GuessRangeFromModes(MonPtr mon, DisplayModePtr mode)
        mon->vrefresh[0].lo = 58.0;
 }
 
-_X_EXPORT void
+struct det_monrec_parameter {
+    MonRec *mon_rec;
+    int *max_clock;
+    Bool set_hsync;
+    Bool set_vrefresh;
+    enum { sync_config, sync_edid, sync_default } *sync_source;
+};
+
+static void handle_detailed_monrec(struct detailed_monitor_section *det_mon,
+                                   void *data)
+{
+    enum { sync_config, sync_edid, sync_default };
+    struct det_monrec_parameter *p;
+    p = (struct det_monrec_parameter *)data;
+
+    if (det_mon->type == DS_RANGES) {
+        struct monitor_ranges *ranges = &det_mon->section.ranges;
+        if (p->set_hsync && ranges->max_h) {
+            p->mon_rec->hsync[p->mon_rec->nHsync].lo = ranges->min_h;
+            p->mon_rec->hsync[p->mon_rec->nHsync].hi = ranges->max_h;
+            p->mon_rec->nHsync++;
+            if (*p->sync_source == sync_default)
+                *p->sync_source = sync_edid;
+        }
+        if (p->set_vrefresh && ranges->max_v) {
+            p->mon_rec->vrefresh[p->mon_rec->nVrefresh].lo = ranges->min_v;
+            p->mon_rec->vrefresh[p->mon_rec->nVrefresh].hi = ranges->max_v;
+            p->mon_rec->nVrefresh++;
+            if (*p->sync_source == sync_default)
+                *p->sync_source = sync_edid;
+        }
+        if (ranges->max_clock * 1000 > *p->max_clock)
+            *p->max_clock = ranges->max_clock * 1000;
+    }
+}
+
+void
 xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 {
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -1410,15 +1547,12 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	maxY = config->maxHeight;
     }
 
-    /* Elide duplicate modes before defaulting code uses them */
-    xf86PruneDuplicateMonitorModes (scrn->monitor);
-    
     /* Probe the list of modes for each output. */
     for (o = 0; o < config->num_output; o++) 
     {
 	xf86OutputPtr	    output = config->output[o];
 	DisplayModePtr	    mode;
-	DisplayModePtr	    config_modes = NULL, output_modes, default_modes;
+	DisplayModePtr	    config_modes = NULL, output_modes, default_modes = NULL;
 	char		    *preferred_mode;
 	xf86MonPtr	    edid_monitor;
 	XF86ConfMonitorPtr  conf_monitor;
@@ -1426,6 +1560,9 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	int		    min_clock = 0;
 	int		    max_clock = 0;
 	double		    clock;
+	Bool                add_default_modes = TRUE;
+	Bool		    debug_modes = config->debug_modes ||
+					  xf86Initialising;
 	enum { sync_config, sync_edid, sync_default } sync_source = sync_default;
 	
 	while (output->probed_modes != NULL)
@@ -1471,37 +1608,24 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	
 	edid_monitor = output->MonInfo;
 	
-	if (edid_monitor)
-	{
-	    int			    i;
-	    Bool		    set_hsync = mon_rec.nHsync == 0;
-	    Bool		    set_vrefresh = mon_rec.nVrefresh == 0;
+        if (edid_monitor)
+        {
+            struct det_monrec_parameter p;
+            struct disp_features    *features = &edid_monitor->features;
 
-	    for (i = 0; i < sizeof (edid_monitor->det_mon) / sizeof (edid_monitor->det_mon[0]); i++)
-	    {
-		if (edid_monitor->det_mon[i].type == DS_RANGES)
-		{
-		    struct monitor_ranges   *ranges = &edid_monitor->det_mon[i].section.ranges;
-		    if (set_hsync && ranges->max_h)
-		    {
-			mon_rec.hsync[mon_rec.nHsync].lo = ranges->min_h;
-			mon_rec.hsync[mon_rec.nHsync].hi = ranges->max_h;
-			mon_rec.nHsync++;
-			if (sync_source == sync_default)
-			    sync_source = sync_edid;
-		    }
-		    if (set_vrefresh && ranges->max_v)
-		    {
-			mon_rec.vrefresh[mon_rec.nVrefresh].lo = ranges->min_v;
-			mon_rec.vrefresh[mon_rec.nVrefresh].hi = ranges->max_v;
-			mon_rec.nVrefresh++;
-			if (sync_source == sync_default)
-			    sync_source = sync_edid;
-		    }
-		    if (ranges->max_clock * 1000 > max_clock)
-			max_clock = ranges->max_clock * 1000;
-		}
-	    }
+	    /* if display is not continuous-frequency, don't add default modes */
+	    if (!GTF_SUPPORTED(features->msc))
+		add_default_modes = FALSE;
+
+	    p.mon_rec = &mon_rec;
+	    p.max_clock = &max_clock;
+	    p.set_hsync = mon_rec.nHsync == 0;
+	    p.set_vrefresh = mon_rec.nVrefresh == 0;
+	    p.sync_source = &sync_source;
+
+	    xf86ForEachDetailedBlock(edid_monitor,
+			             handle_detailed_monrec,
+			             &p);
 	}
 
 	if (xf86GetOptValFreq (output->options, OPTION_MIN_CLOCK,
@@ -1532,8 +1656,9 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	    mon_rec.vrefresh[0].hi = 62.0;
 	    mon_rec.nVrefresh = 1;
 	}
-	default_modes = xf86GetDefaultModes (output->interlaceAllowed,
-					     output->doubleScanAllowed);
+
+	if (add_default_modes)
+	    default_modes = xf86GetDefaultModes ();
 
 	/*
 	 * If this is not an RB monitor, remove RB modes from the default
@@ -1570,11 +1695,17 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	output->probed_modes = xf86ModesAdd (output->probed_modes, default_modes);
 	
 	/*
-	 * Check all modes against max size
+	 * Check all modes against max size, interlace, and doublescan
 	 */
 	if (maxX && maxY)
 	    xf86ValidateModesSize (scrn, output->probed_modes,
 				       maxX, maxY, 0);
+
+	{
+	    int flags = (output->interlaceAllowed ? V_INTERLACE : 0) |
+			(output->doubleScanAllowed ? V_DBLSCAN : 0);
+	    xf86ValidateModesFlags (scrn, output->probed_modes, flags);
+	}
 	 
 	/*
 	 * Check all modes against output
@@ -1583,8 +1714,7 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	    if (mode->status == MODE_OK)
 		mode->status = (*output->funcs->mode_valid)(output, mode);
 	
-	xf86PruneInvalidModes(scrn, &output->probed_modes,
-			      config->debug_modes);
+	xf86PruneInvalidModes(scrn, &output->probed_modes, debug_modes);
 	
 	output->probed_modes = xf86SortModes (output->probed_modes);
 	
@@ -1616,7 +1746,7 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	
 	output->initial_rotation = xf86OutputInitialRotation (output);
 
-	if (config->debug_modes) {
+	if (debug_modes) {
 	    if (output->probed_modes != NULL) {
 		xf86DrvMsg(scrn->scrnIndex, X_INFO,
 			   "Printing probed modes for output %s\n",
@@ -1635,7 +1765,7 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
 	    mode->VRefresh = xf86ModeVRefresh(mode);
 	    xf86SetModeCrtc(mode, INTERLACE_HALVE_V);
 
-	    if (config->debug_modes)
+	    if (debug_modes)
 		xf86PrintModeline(scrn->scrnIndex, mode);
 	}
     }
@@ -1647,7 +1777,7 @@ xf86ProbeOutputModes (ScrnInfoPtr scrn, int maxX, int maxY)
  */
 
 /* XXX where does this function belong? Here? */
-_X_EXPORT void
+void
 xf86RandR12GetOriginalVirtualSize(ScrnInfoPtr scrn, int *x, int *y);
 
 static DisplayModePtr
@@ -1742,7 +1872,7 @@ SetCompatOutput(xf86CrtcConfigPtr config)
     return output;
 }
 
-_X_EXPORT void
+void
 xf86SetScrnInfoModes (ScrnInfoPtr scrn)
 {
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -1784,10 +1914,15 @@ xf86SetScrnInfoModes (ScrnInfoPtr scrn)
 	}
     }
     scrn->currentMode = scrn->modes;
+#ifdef XFreeXDGA
+    if (scrn->pScreen)
+	    _xf86_di_dga_reinit_internal(scrn->pScreen);
+#endif
 }
 
 static void
-xf86EnableOutputs(ScrnInfoPtr scrn, xf86CrtcConfigPtr config, Bool *enabled)
+xf86CollectEnabledOutputs(ScrnInfoPtr scrn, xf86CrtcConfigPtr config,
+			  Bool *enabled)
 {
     Bool any_enabled = FALSE;
     int o;
@@ -1817,69 +1952,6 @@ nextEnabledOutput(xf86CrtcConfigPtr config, Bool *enabled, int *index)
     }
     
     return FALSE;
-}
-
-static Bool
-xf86TargetPreferred(ScrnInfoPtr scrn, xf86CrtcConfigPtr config,
-		    DisplayModePtr *modes, Bool *enabled,
-		    int width, int height)
-{
-    int o, p;
-    int max_pref_width = 0, max_pref_height = 0;
-    DisplayModePtr *preferred, *preferred_match;
-    Bool ret = FALSE;
-
-    preferred = xnfcalloc(config->num_output, sizeof(DisplayModePtr));
-    preferred_match = xnfcalloc(config->num_output, sizeof(DisplayModePtr));
-
-    /* Check if the preferred mode is available on all outputs */
-    for (p = -1; nextEnabledOutput(config, enabled, &p); ) {
-	Rotation r = config->output[p]->initial_rotation;
-	DisplayModePtr mode;
-	if ((preferred[p] = xf86OutputHasPreferredMode(config->output[p],
-			width, height))) {
-	    int pref_width = xf86ModeWidth(preferred[p], r);
-	    int pref_height = xf86ModeHeight(preferred[p], r);
-	    Bool all_match = TRUE;
-
-	    for (o = -1; nextEnabledOutput(config, enabled, &o); ) {
-		Bool match = FALSE;
-		xf86OutputPtr output = config->output[o];
-		if (o == p)
-		    continue;
-
-		for (mode = output->probed_modes; mode; mode = mode->next) {
-		    Rotation r = output->initial_rotation;
-		    if (xf86ModeWidth(mode, r) == pref_width &&
-			    xf86ModeHeight(mode, r) == pref_height) {
-			preferred[o] = mode;
-			match = TRUE;
-		    }
-		}
-
-		all_match &= match;
-	    }
-
-	    if (all_match &&
-		    (pref_width*pref_height > max_pref_width*max_pref_height)) {
-		for (o = -1; nextEnabledOutput(config, enabled, &o); )
-		    preferred_match[o] = preferred[o];
-		max_pref_width = pref_width;
-		max_pref_height = pref_height;
-		ret = TRUE;
-	    }
-	}
-    }
-
-    if (ret) {
-	/* oh good, there is a match.  stash the selected modes and return. */
-	memcpy(modes, preferred_match,
-		config->num_output * sizeof(DisplayModePtr));
-    }
-
-    xfree(preferred);
-    xfree(preferred_match);
-    return ret;
 }
 
 static Bool
@@ -1940,6 +2012,97 @@ bestModeForAspect(xf86CrtcConfigPtr config, Bool *enabled, float aspect)
 
     /* return the biggest one found */
     return match;
+}
+
+static Bool
+xf86TargetPreferred(ScrnInfoPtr scrn, xf86CrtcConfigPtr config,
+		    DisplayModePtr *modes, Bool *enabled,
+		    int width, int height)
+{
+    int o, p;
+    int max_pref_width = 0, max_pref_height = 0;
+    DisplayModePtr *preferred, *preferred_match;
+    Bool ret = FALSE;
+
+    preferred = xnfcalloc(config->num_output, sizeof(DisplayModePtr));
+    preferred_match = xnfcalloc(config->num_output, sizeof(DisplayModePtr));
+
+    /* Check if the preferred mode is available on all outputs */
+    for (p = -1; nextEnabledOutput(config, enabled, &p); ) {
+	Rotation r = config->output[p]->initial_rotation;
+	DisplayModePtr mode;
+	if ((preferred[p] = xf86OutputHasPreferredMode(config->output[p],
+			width, height))) {
+	    int pref_width = xf86ModeWidth(preferred[p], r);
+	    int pref_height = xf86ModeHeight(preferred[p], r);
+	    Bool all_match = TRUE;
+
+	    for (o = -1; nextEnabledOutput(config, enabled, &o); ) {
+		Bool match = FALSE;
+		xf86OutputPtr output = config->output[o];
+		if (o == p)
+		    continue;
+
+		for (mode = output->probed_modes; mode; mode = mode->next) {
+		    Rotation r = output->initial_rotation;
+		    if (xf86ModeWidth(mode, r) == pref_width &&
+			    xf86ModeHeight(mode, r) == pref_height) {
+			preferred[o] = mode;
+			match = TRUE;
+		    }
+		}
+
+		all_match &= match;
+	    }
+
+	    if (all_match &&
+		    (pref_width*pref_height > max_pref_width*max_pref_height)) {
+		for (o = -1; nextEnabledOutput(config, enabled, &o); )
+		    preferred_match[o] = preferred[o];
+		max_pref_width = pref_width;
+		max_pref_height = pref_height;
+		ret = TRUE;
+	    }
+	}
+    }
+
+    /*
+     * If there's no preferred mode, but only one monitor, pick the
+     * biggest mode for its aspect ratio, assuming one exists.
+     */
+    if (!ret) do {
+	int i = 0;
+	float aspect = 0.0;
+
+	/* count the number of enabled outputs */
+	for (i = 0, p = -1; nextEnabledOutput(config, enabled, &p); i++) ;
+
+	if (i != 1)
+	    break;
+
+	p = -1;
+	nextEnabledOutput(config, enabled, &p);
+	if (config->output[p]->mm_height)
+	    aspect = (float)config->output[p]->mm_width /
+		     (float)config->output[p]->mm_height;
+
+	if (aspect)
+	    preferred_match[p] = bestModeForAspect(config, enabled, aspect);
+
+	if (preferred_match[p])
+	    ret = TRUE;
+
+    } while (0);
+
+    if (ret) {
+	/* oh good, there is a match.  stash the selected modes and return. */
+	memcpy(modes, preferred_match,
+		config->num_output * sizeof(DisplayModePtr));
+    }
+
+    xfree(preferred);
+    xfree(preferred_match);
+    return ret;
 }
 
 static Bool
@@ -2055,6 +2218,99 @@ xf86TargetUserpref(ScrnInfoPtr scrn, xf86CrtcConfigPtr config,
     return FALSE;
 }
 
+static Bool
+xf86CrtcSetInitialGamma(xf86CrtcPtr crtc, float gamma_red, float gamma_green,
+        float gamma_blue)
+{
+    int i, size = 256;
+    CARD16 *red, *green, *blue;
+
+    red = malloc(3 * size * sizeof(CARD16));
+    green = red + size;
+    blue = green + size;
+
+     /* Only cause warning if user wanted gamma to be set. */
+    if (!crtc->funcs->gamma_set && (gamma_red != 1.0 || gamma_green != 1.0 || gamma_blue != 1.0)) {
+        free(red);
+        return FALSE;
+    } else if (!crtc->funcs->gamma_set) {
+        free(red);
+        return TRUE;
+      }
+
+    /* At this early stage none of the randr-interface stuff is up.
+     * So take the default gamma size for lack of something better.
+     */
+    for (i = 0; i < size; i++) {
+        if (gamma_red == 1.0)
+            red[i] = i << 8;
+        else
+            red[i] = (CARD16)(pow((double)i/(double)(size - 1),
+			1. / (double)gamma_red) * (double)(size - 1) * 256);
+
+        if (gamma_green == 1.0)
+            green[i] = i << 8;
+        else
+            green[i] = (CARD16)(pow((double)i/(double)(size - 1),
+			1. / (double)gamma_green) * (double)(size - 1) * 256);
+
+        if (gamma_blue == 1.0)
+            blue[i] = i << 8;
+        else
+            blue[i] = (CARD16)(pow((double)i/(double)(size - 1),
+			1. / (double)gamma_blue) * (double)(size - 1) * 256);
+    }
+
+    /* Default size is 256, so anything else is failure. */
+    if (size != crtc->gamma_size) {
+        free(red);
+        return FALSE;
+      }
+
+    crtc->gamma_size = size;
+    memcpy (crtc->gamma_red, red, crtc->gamma_size * sizeof (CARD16));
+    memcpy (crtc->gamma_green, green, crtc->gamma_size * sizeof (CARD16));
+    memcpy (crtc->gamma_blue, blue, crtc->gamma_size * sizeof (CARD16));
+
+    /* Do not set gamma now, delay until the crtc is activated. */
+
+    free(red);
+
+    return TRUE;
+}
+
+static Bool
+xf86OutputSetInitialGamma(xf86OutputPtr output)
+{
+    XF86ConfMonitorPtr mon = output->conf_monitor;
+    float gamma_red = 1.0, gamma_green = 1.0, gamma_blue = 1.0;
+    
+    if (!mon)
+        return TRUE;
+
+    if (!output->crtc)
+        return FALSE;
+
+    /* Get configured values, where they exist. */
+    if (mon->mon_gamma_red >= GAMMA_MIN &&
+        mon->mon_gamma_red <= GAMMA_MAX)
+            gamma_red = mon->mon_gamma_red;
+
+    if (mon->mon_gamma_green >= GAMMA_MIN &&
+        mon->mon_gamma_green <= GAMMA_MAX)
+            gamma_green = mon->mon_gamma_green;
+
+    if (mon->mon_gamma_blue >= GAMMA_MIN &&
+        mon->mon_gamma_blue <= GAMMA_MAX)
+            gamma_blue = mon->mon_gamma_blue;
+
+    /* This avoids setting gamma 1.0 in case another cloned output on this crtc has a specific gamma. */
+    if (gamma_red != 1.0 || gamma_green != 1.0 || gamma_blue != 1.0) {
+	xf86DrvMsg(output->scrn->scrnIndex, X_INFO, "Output %s wants gamma correction (%.1f, %.1f, %.1f)\n", output->name, gamma_red, gamma_green, gamma_blue);
+	return xf86CrtcSetInitialGamma(output->crtc, gamma_red, gamma_green, gamma_blue);
+    }else
+	return TRUE;
+}
 
 /**
  * Construct default screen configuration
@@ -2070,7 +2326,7 @@ xf86TargetUserpref(ScrnInfoPtr scrn, xf86CrtcConfigPtr config,
  * accordingly.
  */
 
-_X_EXPORT Bool
+Bool
 xf86InitialConfiguration (ScrnInfoPtr scrn, Bool canGrow)
 {
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -2105,7 +2361,7 @@ xf86InitialConfiguration (ScrnInfoPtr scrn, Bool canGrow)
     modes = xnfcalloc (config->num_output, sizeof (DisplayModePtr));
     enabled = xnfcalloc (config->num_output, sizeof (Bool));
     
-    xf86EnableOutputs(scrn, config, enabled);
+    xf86CollectEnabledOutputs(scrn, config, enabled);
 
     if (xf86TargetUserpref(scrn, config, modes, enabled, width, height))
 	xf86DrvMsg(i, X_INFO, "Using user preference for initial modes\n");
@@ -2138,6 +2394,11 @@ xf86InitialConfiguration (ScrnInfoPtr scrn, Bool canGrow)
 	xfree (modes);
 	return FALSE;
     }
+
+    /*
+     * Set initial panning of each output
+     */
+    xf86InitialPanning (scrn);
 	
     /*
      * Assign CRTCs to fit output configuration
@@ -2160,8 +2421,14 @@ xf86InitialConfiguration (ScrnInfoPtr scrn, Bool canGrow)
 
 	crtc->enabled = FALSE;
 	memset (&crtc->desiredMode, '\0', sizeof (crtc->desiredMode));
+	/* Set default gamma for all crtc's. */
+	/* This is done to avoid problems later on with cloned outputs. */
+	xf86CrtcSetInitialGamma(crtc, 1.0, 1.0, 1.0);
     }
-    
+
+    if (xf86_crtc_supports_gamma(scrn))
+	xf86DrvMsg(scrn->scrnIndex, X_INFO, "Using default gamma of (1.0, 1.0, 1.0) unless otherwise stated.\n");
+
     /*
      * Set initial configuration
      */
@@ -2177,15 +2444,19 @@ xf86InitialConfiguration (ScrnInfoPtr scrn, Bool canGrow)
 	    crtc->desiredRotation = output->initial_rotation;
 	    crtc->desiredX = output->initial_x;
 	    crtc->desiredY = output->initial_y;
+	    crtc->desiredTransformPresent = FALSE;
 	    crtc->enabled = TRUE;
-	    crtc->x = output->initial_x;
-	    crtc->y = output->initial_y;
+	    memcpy (&crtc->panningTotalArea,    &output->initialTotalArea,    sizeof(BoxRec));
+	    memcpy (&crtc->panningTrackingArea, &output->initialTrackingArea, sizeof(BoxRec));
+	    memcpy (crtc->panningBorder,        output->initialBorder,        4*sizeof(INT16));
 	    output->crtc = crtc;
+	    if (!xf86OutputSetInitialGamma(output))
+		xf86DrvMsg (scrn->scrnIndex, X_WARNING, "Initial gamma correction for output %s: failed.\n", output->name);
 	} else {
 	    output->crtc = NULL;
 	}
     }
-    
+
     if (scrn->display->virtualX == 0)
     {
 	/*
@@ -2294,20 +2565,26 @@ xf86PrepareCrtcs (ScrnInfoPtr scrn)
  * modes (used in EnterVT functions, or at server startup)
  */
 
-_X_EXPORT Bool
+Bool
 xf86SetDesiredModes (ScrnInfoPtr scrn)
 {
     xf86CrtcConfigPtr   config = XF86_CRTC_CONFIG_PTR(scrn);
+    xf86CrtcPtr         crtc = config->crtc[0];
     int			c;
 
-    xf86PrepareOutputs(scrn);
-    xf86PrepareCrtcs(scrn);
+    /* A driver with this hook will take care of this */
+    if (!crtc->funcs->set_mode_major) {
+	xf86PrepareOutputs(scrn);
+	xf86PrepareCrtcs(scrn);
+    }
 
     for (c = 0; c < config->num_crtc; c++)
     {
-	xf86CrtcPtr	crtc = config->crtc[c];
 	xf86OutputPtr	output = NULL;
 	int		o;
+	RRTransformPtr	transform;
+
+	crtc = config->crtc[c];
 
 	/* Skip disabled CRTCs */
 	if (!crtc->enabled)
@@ -2338,12 +2615,17 @@ xf86SetDesiredModes (ScrnInfoPtr scrn)
 		return FALSE;
 	    crtc->desiredMode = *mode;
 	    crtc->desiredRotation = RR_Rotate_0;
+	    crtc->desiredTransformPresent = FALSE;
 	    crtc->desiredX = 0;
 	    crtc->desiredY = 0;
 	}
 
-	if (!xf86CrtcSetMode (crtc, &crtc->desiredMode, crtc->desiredRotation,
-			      crtc->desiredX, crtc->desiredY))
+	if (crtc->desiredTransformPresent)
+	    transform = &crtc->desiredTransform;
+	else
+	    transform = NULL;
+	if (!xf86CrtcSetModeTransform (crtc, &crtc->desiredMode, crtc->desiredRotation,
+				       transform, crtc->desiredX, crtc->desiredY))
 	    return FALSE;
     }
 
@@ -2361,7 +2643,7 @@ xf86SetDesiredModes (ScrnInfoPtr scrn)
  * - Closer in refresh rate to the requested mode.
  */
 
-_X_EXPORT DisplayModePtr
+DisplayModePtr
 xf86OutputFindClosestMode (xf86OutputPtr output, DisplayModePtr desired)
 {
     DisplayModePtr	best = NULL, scan = NULL;
@@ -2424,7 +2706,7 @@ xf86OutputFindClosestMode (xf86OutputPtr output, DisplayModePtr desired)
  * mode across all outputs that are currently active.
  */
 
-_X_EXPORT Bool
+Bool
 xf86SetSingleMode (ScrnInfoPtr pScrn, DisplayModePtr desired, Rotation rotation)
 {
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(pScrn);
@@ -2472,12 +2754,13 @@ xf86SetSingleMode (ScrnInfoPtr pScrn, DisplayModePtr desired, Rotation rotation)
 	    crtc->enabled = FALSE;
 	    continue;
 	}
-	if (!xf86CrtcSetMode (crtc, crtc_mode, rotation, 0, 0))
+	if (!xf86CrtcSetModeTransform (crtc, crtc_mode, rotation, NULL, 0, 0))
 	    ok = FALSE;
 	else
 	{
 	    crtc->desiredMode = *crtc_mode;
 	    crtc->desiredRotation = rotation;
+	    crtc->desiredTransformPresent = FALSE;
 	    crtc->desiredX = 0;
 	    crtc->desiredY = 0;
 	}
@@ -2496,7 +2779,7 @@ xf86SetSingleMode (ScrnInfoPtr pScrn, DisplayModePtr desired, Rotation rotation)
  * If the new mode is off, it will turn off outputs and then CRTCs.
  * Otherwise, it will affect CRTCs before outputs.
  */
-_X_EXPORT void
+void
 xf86DPMSSet(ScrnInfoPtr scrn, int mode, int flags)
 {
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
@@ -2534,7 +2817,7 @@ xf86DPMSSet(ScrnInfoPtr scrn, int mode, int flags)
  * Even for monitors with no DPMS support, by the definition of our DPMS hooks,
  * the outputs will still get disabled (blanked).
  */
-_X_EXPORT Bool
+Bool
 xf86SaveScreen(ScreenPtr pScreen, int mode)
 {
     ScrnInfoPtr pScrn = xf86Screens[pScreen->myNum];
@@ -2550,7 +2833,7 @@ xf86SaveScreen(ScreenPtr pScreen, int mode)
 /**
  * Disable all inactive crtcs and outputs
  */
-_X_EXPORT void
+void
 xf86DisableUnusedFunctions(ScrnInfoPtr pScrn)
 {
     xf86CrtcConfigPtr   xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
@@ -2571,13 +2854,17 @@ xf86DisableUnusedFunctions(ScrnInfoPtr pScrn)
 	{
 	    crtc->funcs->dpms(crtc, DPMSModeOff);
 	    memset(&crtc->mode, 0, sizeof(crtc->mode));
+	    xf86RotateDestroy(crtc);
+	    crtc->active = FALSE;
 	}
     }
+    if (pScrn->pScreen)
+	xf86_crtc_notify(pScrn->pScreen);
 }
 
 #ifdef RANDR_12_INTERFACE
 
-#define EDID_ATOM_NAME		"EDID_DATA"
+#define EDID_ATOM_NAME		"EDID"
 
 /**
  * Set the RandR EDID property
@@ -2601,15 +2888,44 @@ xf86OutputSetEDIDProperty (xf86OutputPtr output, void *data, int data_len)
 
 #endif
 
+/* Pull out a phyiscal size from a detailed timing if available. */
+struct det_phySize_parameter {
+    xf86OutputPtr output;
+    ddc_quirk_t quirks;
+    Bool ret;
+};
+
+static void  handle_detailed_physical_size(struct detailed_monitor_section
+		                          *det_mon, void *data)
+{
+    struct det_phySize_parameter *p;
+    p = (struct det_phySize_parameter *)data;
+
+    if (p->ret == TRUE )
+        return ;
+
+    xf86DetTimingApplyQuirks(det_mon, p->quirks,
+                             p->output->MonInfo->features.hsize,
+                             p->output->MonInfo->features.vsize);
+    if (det_mon->type == DT &&
+        det_mon->section.d_timings.h_size != 0 &&
+        det_mon->section.d_timings.v_size != 0) {
+
+        p->output->mm_width = det_mon->section.d_timings.h_size;
+        p->output->mm_height = det_mon->section.d_timings.v_size;
+        p->ret = TRUE;
+    }
+}
+
 /**
  * Set the EDID information for the specified output
  */
-_X_EXPORT void
+void
 xf86OutputSetEDID (xf86OutputPtr output, xf86MonPtr edid_mon)
 {
     ScrnInfoPtr		scrn = output->scrn;
     xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
-    int			i;
+    Bool		debug_modes = config->debug_modes || xf86Initialising;
 #ifdef RANDR_12_INTERFACE
     int			size;
 #endif
@@ -2619,7 +2935,7 @@ xf86OutputSetEDID (xf86OutputPtr output, xf86MonPtr edid_mon)
     
     output->MonInfo = edid_mon;
 
-    if (config->debug_modes) {
+    if (debug_modes) {
 	xf86DrvMsg(scrn->scrnIndex, X_INFO, "EDID for output %s\n",
 		   output->name);
 	xf86PrintEDID(edid_mon);
@@ -2644,20 +2960,15 @@ xf86OutputSetEDID (xf86OutputPtr output, xf86MonPtr edid_mon)
     xf86OutputSetEDIDProperty (output, edid_mon ? edid_mon->rawData : NULL, size);
 #endif
 
-    if (edid_mon)
-    {
-	/* Pull out a phyiscal size from a detailed timing if available. */
-	for (i = 0; i < 4; i++) {
-	    if (edid_mon->det_mon[i].type == DT &&
-		edid_mon->det_mon[i].section.d_timings.h_size != 0 &&
-		edid_mon->det_mon[i].section.d_timings.v_size != 0)
-	    {
-		output->mm_width = edid_mon->det_mon[i].section.d_timings.h_size;
-		output->mm_height = edid_mon->det_mon[i].section.d_timings.v_size;
-		break;
-	    }
-	}
-    
+    if (edid_mon) {
+
+        struct det_phySize_parameter p;
+        p.output = output;
+        p.quirks = xf86DDCDetectQuirks(scrn->scrnIndex,edid_mon, FALSE);
+        p.ret = FALSE;
+        xf86ForEachDetailedBlock(edid_mon,
+                                 handle_detailed_physical_size, &p);
+
 	/* if no mm size is available from a detailed timing, check the max size field */
 	if ((!output->mm_width || !output->mm_height) &&
 	    (edid_mon->features.hsize && edid_mon->features.vsize))
@@ -2672,7 +2983,7 @@ xf86OutputSetEDID (xf86OutputPtr output, xf86MonPtr edid_mon)
  * Return the list of modes supported by the EDID information
  * stored in 'output'
  */
-_X_EXPORT DisplayModePtr
+DisplayModePtr
 xf86OutputGetEDIDModes (xf86OutputPtr output)
 {
     ScrnInfoPtr	scrn = output->scrn;
@@ -2684,7 +2995,7 @@ xf86OutputGetEDIDModes (xf86OutputPtr output)
 }
 
 /* maybe we should care about DDC1?  meh. */
-_X_EXPORT xf86MonPtr
+xf86MonPtr
 xf86OutputGetEDID (xf86OutputPtr output, I2CBusPtr pDDCBus)
 {
     ScrnInfoPtr	scrn = output->scrn;
@@ -2703,7 +3014,7 @@ static char *_xf86ConnectorNames[] = {
 					"Component", "LFP", "Proprietary",
 					"HDMI", "DisplayPort",
 				     };
-_X_EXPORT char *
+char *
 xf86ConnectorGetName(xf86ConnectorType connector)
 {
     return _xf86ConnectorNames[connector];
@@ -2788,7 +3099,7 @@ xf86_covering_crtc(ScrnInfoPtr pScrn,
  * not that the video shouldn't be displayed
  */
 
-_X_EXPORT Bool
+Bool
 xf86_crtc_clip_video_helper(ScrnInfoPtr pScrn,
 			    xf86CrtcPtr *crtc_ret,
 			    xf86CrtcPtr desired_crtc,
@@ -2826,4 +3137,62 @@ xf86_crtc_clip_video_helper(ScrnInfoPtr pScrn,
 	REGION_UNINIT (pScreen, &crtc_region_local);
 
     return ret;
+}
+
+xf86_crtc_notify_proc_ptr
+xf86_wrap_crtc_notify (ScreenPtr screen, xf86_crtc_notify_proc_ptr new)
+{
+    if (xf86CrtcConfigPrivateIndex != -1)
+    {
+	ScrnInfoPtr		scrn = xf86Screens[screen->myNum];
+	xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
+	xf86_crtc_notify_proc_ptr	old;
+	
+	old = config->xf86_crtc_notify;
+	config->xf86_crtc_notify = new;
+	return old;
+    }
+    return NULL;
+}
+
+void
+xf86_unwrap_crtc_notify(ScreenPtr screen, xf86_crtc_notify_proc_ptr old)
+{
+    if (xf86CrtcConfigPrivateIndex != -1)
+    {
+	ScrnInfoPtr		scrn = xf86Screens[screen->myNum];
+	xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
+    
+	config->xf86_crtc_notify = old;
+    }
+}
+
+void
+xf86_crtc_notify(ScreenPtr screen)
+{
+    ScrnInfoPtr		scrn = xf86Screens[screen->myNum];
+    xf86CrtcConfigPtr	config = XF86_CRTC_CONFIG_PTR(scrn);
+    
+    if (config->xf86_crtc_notify)
+	config->xf86_crtc_notify(screen);
+}
+
+Bool
+xf86_crtc_supports_gamma(ScrnInfoPtr pScrn)
+{
+    if (xf86CrtcConfigPrivateIndex != -1) {
+	xf86CrtcConfigPtr xf86_config = XF86_CRTC_CONFIG_PTR(pScrn);
+	xf86CrtcPtr crtc;
+
+	/* for multiple drivers loaded we need this */
+	if (!xf86_config)
+		return FALSE;
+	if (xf86_config->num_crtc == 0)
+	    return FALSE;
+	crtc = xf86_config->crtc[0];
+
+	return (crtc->funcs->gamma_set != NULL);
+    }
+
+    return FALSE;
 }

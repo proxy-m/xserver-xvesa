@@ -16,8 +16,6 @@
 #include "xf86fbman.h"
 #include "servermd.h"
 
-static const OptionInfoRec *XAAAvailableOptions(void *unused);
-
 /*
  * XAA Config options
  */
@@ -43,7 +41,8 @@ typedef enum {
     XAAOPT_WRITE_BITMAP,
     XAAOPT_WRITE_PIXMAP,
     XAAOPT_PIXMAP_CACHE,
-    XAAOPT_OFFSCREEN_PIXMAPS
+    XAAOPT_OFFSCREEN_PIXMAPS,
+    XAAOPT_HAS_DUMB_INVERTED_OPTION_SENSE
 } XAAOpts;
 
 static const OptionInfoRec XAAOptions[] = {
@@ -89,6 +88,8 @@ static const OptionInfoRec XAAOptions[] = {
 				OPTV_BOOLEAN,	{0}, FALSE },
     {XAAOPT_OFFSCREEN_PIXMAPS,		"XaaNoOffscreenPixmaps",
 				OPTV_BOOLEAN,	{0}, FALSE },
+    {XAAOPT_HAS_DUMB_INVERTED_OPTION_SENSE, "XaaOffscreenPixmaps",
+				OPTV_BOOLEAN,   {0}, FALSE },
     { -1,				NULL,
 				OPTV_NONE,	{0}, FALSE }
 };
@@ -100,7 +101,9 @@ static XF86ModuleVersionInfo xaaVersRec =
 	MODINFOSTRING1,
 	MODINFOSTRING2,
 	XORG_VERSION_CURRENT,
-	1, 2, 0,
+	XAA_VERSION_MAJOR,
+	XAA_VERSION_MINOR,
+	XAA_VERSION_RELEASE,
 	ABI_CLASS_VIDEODRV,		/* requires the video driver ABI */
 	ABI_VIDEODRV_VERSION,
 	MOD_CLASS_NONE,
@@ -108,13 +111,6 @@ static XF86ModuleVersionInfo xaaVersRec =
 };
 
 _X_EXPORT XF86ModuleData xaaModuleData = { &xaaVersRec, NULL, NULL };
-
-/*ARGSUSED*/
-static const OptionInfoRec *
-XAAAvailableOptions(void *unused)
-{
-    return (XAAOptions);
-}
 
 Bool
 XAAInitAccel(ScreenPtr pScreen, XAAInfoRecPtr infoRec)
@@ -532,8 +528,10 @@ XAAInitAccel(ScreenPtr pScreen, XAAInfoRecPtr infoRec)
 #define XAAMSG(s) do { if (serverGeneration == 1) xf86ErrorF(s); } while (0)
 
     if((infoRec->Flags & OFFSCREEN_PIXMAPS) && HaveScreenToScreenCopy &&
-		!xf86ReturnOptValBool(options, XAAOPT_OFFSCREEN_PIXMAPS,
-		                      FALSE)) {
+		xf86ReturnOptValBool(options,
+				     XAAOPT_HAS_DUMB_INVERTED_OPTION_SENSE,
+				     FALSE))
+    {
 	XAAMSG("\tOffscreen Pixmaps\n");
     } else {
 	infoRec->Flags &= ~OFFSCREEN_PIXMAPS;

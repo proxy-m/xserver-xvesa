@@ -302,9 +302,9 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
 
 
     if (pCurs == NullCursor) {	/* means we're supposed to remove the cursor */
-        if (ScreenPriv->SWCursor || pDev != inputInfo.pointer)
-            (*ScreenPriv->spriteFuncs->SetCursor)(pDev, pScreen, NullCursor,
-                                                  x, y);
+        if (ScreenPriv->SWCursor ||
+            !(GetMaster(pDev, MASTER_POINTER) == inputInfo.pointer))
+                (*ScreenPriv->spriteFuncs->SetCursor)(pDev, pScreen, NullCursor, x, y);
         else if (ScreenPriv->isUp) {
             xf86SetCursor(pScreen, NullCursor, x, y);
             ScreenPriv->isUp = FALSE;
@@ -314,7 +314,8 @@ xf86CursorSetCursor(DeviceIntPtr pDev, ScreenPtr pScreen, CursorPtr pCurs,
 
     /* only update for VCP, otherwise we get cursor jumps when removing a
        sprite. The second cursor is never HW rendered anyway. */
-    if (pDev == inputInfo.pointer)
+    if (pDev == inputInfo.pointer ||
+        (!IsMaster(pDev) && pDev->u.master == inputInfo.pointer))
     {
 	ScreenPriv->CurrentCursor = pCurs;
 	ScreenPriv->x = x;
@@ -379,7 +380,7 @@ xf86CursorMoveCursor(DeviceIntPtr pDev, ScreenPtr pScreen, int x, int y)
     /* only update coordinate state for first sprite, otherwise we get jumps
        when removing a sprite. The second sprite is never HW rendered anyway */
     if (pDev == inputInfo.pointer ||
-	(!pDev->isMaster && pDev->u.master == inputInfo.pointer))
+	(!IsMaster(pDev) && pDev->u.master == inputInfo.pointer))
     {
 	ScreenPriv->x = x;
 	ScreenPriv->y = y;

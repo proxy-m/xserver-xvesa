@@ -47,6 +47,7 @@
 - (const char *) prefs_get_string:(NSString *)key default:(const char *)def;
 - (float) prefs_get_float:(NSString *)key default:(float)def;
 - (int) prefs_get_boolean:(NSString *)key default:(int)def;
+- (NSURL *) prefs_copy_url:(NSString *)key default:(NSURL *)def;
 - (NSArray *) prefs_get_array:(NSString *)key;
 - (void) prefs_set_integer:(NSString *)key value:(int)value;
 - (void) prefs_set_float:(NSString *)key value:(float)value;
@@ -55,6 +56,7 @@
 - (void) prefs_set_string:(NSString *)key value:(NSString *)value;
 - (void) prefs_synchronize;
 
+- (X11Controller *) controller;
 - (OSX_BOOL) x_active;
 @end
 
@@ -69,13 +71,12 @@ void X11ApplicationSetFrontProcess (void);
 void X11ApplicationSetCanQuit (int state);
 void X11ApplicationServerReady (void);
 void X11ApplicationShowHideMenubar (int state);
+void X11ApplicationLaunchClient (const char *cmd);
 
 void X11ApplicationMain(int argc, char **argv, char **envp);
 
 extern int X11EnableKeyEquivalents;
 extern int quartzHasRoot, quartzEnableRootless, quartzFullscreenMenu;
-
-#define APP_PREFS "org.x.X11"
 
 #define PREFS_APPSMENU              "apps_menu"
 #define PREFS_FAKEBUTTONS           "enable_fake_buttons"
@@ -94,8 +95,10 @@ extern int quartzHasRoot, quartzEnableRootless, quartzFullscreenMenu;
 #define PREFS_APPKIT_MODIFIERS      "appkit_modifiers"
 #define PREFS_WINDOW_ITEM_MODIFIERS "window_item_modifiers"
 #define PREFS_ROOTLESS              "rootless"
+#define PREFS_TEST_EXTENSIONS       "enable_test_extensions"
 #define PREFS_XP_OPTIONS            "xp_options"
 #define PREFS_LOGIN_SHELL           "login_shell"
+#define PREFS_UPDATE_FEED           "update_feed"
 #define PREFS_CLICK_THROUGH         "wm_click_through"
 #define PREFS_FFM                   "wm_ffm"
 #define PREFS_FOCUS_ON_NEW_WINDOW   "wm_focus_on_new_window"

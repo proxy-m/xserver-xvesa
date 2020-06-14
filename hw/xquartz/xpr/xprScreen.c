@@ -48,6 +48,8 @@
 #include "applewmExt.h"
 #include "micmap.h"
 
+#include "rootlessCommon.h"
+
 #ifdef DAMAGE
 # include "damage.h"
 #endif
@@ -107,6 +109,7 @@ static void eventHandler(unsigned int type, const void *arg,
                 DRISurfaceNotify(*(xp_surface_id *) arg, kind);
             }
             break;
+#ifdef XP_EVENT_SPACE_CHANGED
         case  XP_EVENT_SPACE_CHANGED:
             DEBUG_LOG("XP_EVENT_SPACE_CHANGED\n");
             if(arg_size == sizeof(uint32_t)) {
@@ -114,6 +117,7 @@ static void eventHandler(unsigned int type, const void *arg,
                 DarwinSendDDXEvent(kXquartzSpaceChanged, 1, space_id);
             }
             break;
+#endif
         default:
             ErrorF("Unknown XP_EVENT type (%d) in xprScreen:eventHandler\n", type);
     }
@@ -180,7 +184,20 @@ xprAddPseudoramiXScreens(int *x, int *y, int *width, int *height)
 
     // Find all the CoreGraphics displays
     CGGetActiveDisplayList(0, NULL, &displayCount);
+    DEBUG_LOG("displayCount: %d\n", (int)displayCount);
+
+    if(!displayCount) {
+        ErrorF("CoreGraphics has reported no connected displays.  Creating a stub 800x600 display.\n");
+        *x = *y = 0;
+        *width = 800;
+        *height = 600;
+        PseudoramiXAddScreen(*x, *y, *width, *height);
+        return;
+    }
+
     displayList = xalloc(displayCount * sizeof(CGDirectDisplayID));
+    if(!displayList)
+        FatalError("Unable to allocate memory for list of displays.\n");
     CGGetActiveDisplayList(displayCount, displayList, &displayCount);
 
     /* Get the union of all screens */
@@ -245,13 +262,18 @@ xprDisplayInit(void)
     xp_select_events(XP_EVENT_DISPLAY_CHANGED
                      | XP_EVENT_WINDOW_STATE_CHANGED
                      | XP_EVENT_WINDOW_MOVED
+#ifdef XP_EVENT_SPACE_CHANGED
+                     | XP_EVENT_SPACE_CHANGED
+#endif
                      | XP_EVENT_SURFACE_CHANGED
-                     | XP_EVENT_SURFACE_DESTROYED
-                     | XP_EVENT_SPACE_CHANGED,
+                     | XP_EVENT_SURFACE_DESTROYED,
                      eventHandler, NULL);
 
     AppleDRIExtensionInit();
     xprAppleWMInit();
+
+    if (!quartzEnableRootless)
+        RootlessHideAllWindows();
 }
 
 /*
@@ -268,24 +290,10 @@ xprAddScreen(int index, ScreenPtr pScreen)
     
     if(depth == -1) {
         depth = CGDisplaySamplesPerPixel(kCGDirectMainDisplay) * CGDisplayBitsPerSample(kCGDirectMainDisplay);
-        //dfb->depth = CGDisplaySamplesPerPixel(kCGDirectMainDisplay) * CGDisplayBitsPerSample(kCGDirectMainDisplay);
-        //dfb->bitsPerRGB = CGDisplayBitsPerSample(kCGDirectMainDisplay);
-        //dfb->bitsPerPixel = CGDisplayBitsPerPixel(kCGDirectMainDisplay);
     }
     
     switch(depth) {
-        case -8: // broken
-            FatalError("Unsupported color depth %d\n", darwinDesiredDepth);
-            dfb->visuals = (1 << StaticGray) | (1 << GrayScale);
-            dfb->preferredCVC = GrayScale;
-            dfb->depth = 8;
-            dfb->bitsPerRGB = 8;
-            dfb->bitsPerPixel = 8;
-            dfb->redMask = 0;
-            dfb->greenMask = 0;
-            dfb->blueMask = 0;
-            break;
-        case 8: // broken
+        case 8: // pseudo-working
             dfb->visuals = PseudoColorMask;
             dfb->preferredCVC = PseudoColor;
             dfb->depth = 8;
@@ -296,36 +304,37 @@ xprAddScreen(int index, ScreenPtr pScreen)
             dfb->blueMask = 0;
             break;
         case 15:
-            dfb->visuals = LARGE_VISUALS;
+            dfb->visuals = TrueColorMask; //LARGE_VISUALS;
             dfb->preferredCVC = TrueColor;
             dfb->depth = 15;
             dfb->bitsPerRGB = 5;
             dfb->bitsPerPixel = 16;
-            dfb->redMask   = 0x7c00;
-            dfb->greenMask = 0x03e0;
-            dfb->blueMask  = 0x001f;
+            dfb->redMask   = RM_ARGB(0,5,5,5);
+            dfb->greenMask = GM_ARGB(0,5,5,5);
+            dfb->blueMask  = BM_ARGB(0,5,5,5);
             break;
-        case 24:
-            dfb->visuals = LARGE_VISUALS;
+//        case 24:
+        default:
+            if(depth != 24)
+                ErrorF("Unsupported color depth requested.  Defaulting to 24bit. (depth=%d darwinDesiredDepth=%d CGDisplaySamplesPerPixel=%d CGDisplayBitsPerSample=%d)\n",  darwinDesiredDepth, depth, (int)CGDisplaySamplesPerPixel(kCGDirectMainDisplay), (int)CGDisplayBitsPerSample(kCGDirectMainDisplay));
+            dfb->visuals = TrueColorMask; //LARGE_VISUALS;
             dfb->preferredCVC = TrueColor;
             dfb->depth = 24;
             dfb->bitsPerRGB = 8;
             dfb->bitsPerPixel = 32;
-            dfb->redMask   = 0x00ff0000;
-            dfb->greenMask = 0x0000ff00;
-            dfb->blueMask  = 0x000000ff;
+            dfb->redMask   = RM_ARGB(0,8,8,8);
+            dfb->greenMask = GM_ARGB(0,8,8,8);
+            dfb->blueMask  = BM_ARGB(0,8,8,8);
             break;
-        default:
-            FatalError("Unsupported color depth %d\n", darwinDesiredDepth);
     }
 
     if (noPseudoramiXExtension)
     {
-        ErrorF("Warning: noPseudoramiXExtension!\n");
-        
         CGDirectDisplayID dpy;
         CGRect frame;
 
+        ErrorF("Warning: noPseudoramiXExtension!\n");
+        
         dpy = displayAtIndex(index);
 
         frame = displayScreenBounds(dpy);
@@ -419,12 +428,8 @@ static QuartzModeProcsRec xprModeProcs = {
     xprSetupScreen,
     xprInitInput,
     QuartzInitCursor,
-    NULL,               // No need to update cursor
     QuartzSuspendXCursor,
     QuartzResumeXCursor,
-    NULL,               // No capture or release in rootless mode
-    NULL,
-    NULL,               // Xplugin sends screen change events directly
     xprAddPseudoramiXScreens,
     xprUpdateScreen,
     xprIsX11Window,

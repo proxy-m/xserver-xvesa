@@ -70,6 +70,7 @@
 
 typedef enum {
     /* errno-style tokens */
+    OBSOLETE_TOKEN	= -5,
     EOF_TOKEN		= -4,
     LOCK_TOKEN		= -3,
     ERROR_TOKEN		= -2,
@@ -98,8 +99,8 @@ typedef enum {
     /* File tokens */
     FONTPATH,
     MODULEPATH,
-    INPUTDEVICES,
     LOGFILEPATH,
+    XKBDIR,
 
     /* Server Flag tokens.  These are deprecated in favour of generic Options */
     NOTRAPSIGNALS,
@@ -272,7 +273,19 @@ typedef enum {
 
     /* DRI Tokens */
     GROUP,
-    BUFFERS
+    BUFFERS,
+
+    /* InputClass Tokens */
+    MATCH_PRODUCT,
+    MATCH_VENDOR,
+    MATCH_DEVICE_PATH,
+    MATCH_TAG,
+    MATCH_IS_KEYBOARD,
+    MATCH_IS_POINTER,
+    MATCH_IS_JOYSTICK,
+    MATCH_IS_TABLET,
+    MATCH_IS_TOUCHPAD,
+    MATCH_IS_TOUCHSCREEN
 } ParserTokens;
 
 #endif /* _xf86_tokens_h */

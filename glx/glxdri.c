@@ -38,11 +38,12 @@
 
 #include <windowstr.h>
 #include <os.h>
+#include <damage.h>
 
 #define _XF86DRI_SERVER_
 #include <drm_sarea.h>
 #include <xf86drm.h>
-#include <xf86dristr.h>
+#include <X11/dri/xf86driproto.h>
 #include <xf86str.h>
 #include <xf86.h>
 #include <dri.h>
@@ -238,11 +239,13 @@ __glXDRIdrawableDestroy(__GLXdrawable *drawable)
 	__glXleaveServer(GL_FALSE);
     }
 
+    __glXDrawableRelease(drawable);
+
     xfree(private);
 }
 
 static GLboolean
-__glXDRIdrawableSwapBuffers(__GLXdrawable *basePrivate)
+__glXDRIdrawableSwapBuffers(ClientPtr client, __GLXdrawable *basePrivate)
 {
     __GLXDRIdrawable *private = (__GLXDRIdrawable *) basePrivate;
     __GLXDRIscreen *screen =
@@ -647,7 +650,7 @@ __glXDRIscreenCreateContext(__GLXscreen *baseScreen,
 	if (visual->vid == glxConfig->visualID)
 	    break;
     if (i == pScreen->numVisuals)
-	return GL_FALSE;
+	return NULL;
 
     context->hwContextID = FakeClientID(0);
 
@@ -655,6 +658,9 @@ __glXDRIscreenCreateContext(__GLXscreen *baseScreen,
     retval = DRICreateContext(baseScreen->pScreen, visual,
 			      context->hwContextID, &hwContext);
     __glXleaveServer(GL_FALSE);
+
+    if (!retval)
+    	return NULL;
 
     context->driContext =
 	screen->legacy->createNewContext(screen->driScreen,
@@ -701,11 +707,18 @@ __glXDRIscreenCreateDrawable(__GLXscreen *screen,
     private->base.destroy       = __glXDRIdrawableDestroy;
     private->base.swapBuffers   = __glXDRIdrawableSwapBuffers;
     private->base.copySubBuffer = __glXDRIdrawableCopySubBuffer;
+    private->base.waitX		= NULL;
+    private->base.waitGL	= NULL;
 
     __glXenterServer(GL_FALSE);
     retval = DRICreateDrawable(screen->pScreen, serverClient,
 			       pDraw, &hwDrawable);
     __glXleaveServer(GL_FALSE);
+
+    if (!retval) {
+    	xfree(private);
+    	return NULL;
+    }
 
     /* The last argument is 'attrs', which is used with pbuffers which
      * we currently don't support. */
@@ -1074,7 +1087,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     if (!DRIGetDeviceInfo(pScreen, &hFB, &junk,
 			  &framebuffer.size, &framebuffer.stride,
 			  &framebuffer.dev_priv_size, &framebuffer.dev_priv)) {
-	LogMessage(X_ERROR, "AIGLX error: XF86DRIGetDeviceInfo failed");
+	LogMessage(X_ERROR, "AIGLX error: XF86DRIGetDeviceInfo failed\n");
 	goto handle_error;
     }
 
@@ -1085,7 +1098,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     status = drmMap(fd, hFB, framebuffer.size, 
 		    (drmAddressPtr)&framebuffer.base);
     if (status != 0) {
-	LogMessage(X_ERROR, "AIGLX error: drmMap of framebuffer failed (%s)",
+	LogMessage(X_ERROR, "AIGLX error: drmMap of framebuffer failed (%s)\n",
 		   strerror(-status));
 	goto handle_error;
     }
@@ -1095,7 +1108,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
      */
     status = drmMap(fd, hSAREA, SAREA_MAX, &pSAREA);
     if (status != 0) {
-	LogMessage(X_ERROR, "AIGLX error: drmMap of SAREA failed (%s)",
+	LogMessage(X_ERROR, "AIGLX error: drmMap of SAREA failed (%s)\n",
 		   strerror(-status));
 	goto handle_error;
     }
@@ -1113,7 +1126,8 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
 					   screen);
 
     if (screen->driScreen == NULL) {
-	LogMessage(X_ERROR, "AIGLX error: Calling driver entry point failed");
+	LogMessage(X_ERROR,
+		   "AIGLX error: Calling driver entry point failed\n");
 	goto handle_error;
     }
 
@@ -1126,6 +1140,10 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
 
     __glXScreenInit(&screen->base, pScreen);
 
+    /* The first call simply determines the length of the extension string.
+     * This allows us to allocate some memory to hold the extension string,
+     * but it requires that we call __glXGetExtensionString a second time.
+     */
     buffer_size = __glXGetExtensionString(screen->glx_enable_bits, NULL);
     if (buffer_size > 0) {
 	if (screen->base.GLXextensions != NULL) {
@@ -1140,7 +1158,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     __glXsetEnterLeaveServerFuncs(__glXDRIenterServer, __glXDRIleaveServer);
 
     screen->enterVT = pScrn->EnterVT;
-    pScrn->EnterVT = glxDRIEnterVT; 
+    pScrn->EnterVT = glxDRIEnterVT;
     screen->leaveVT = pScrn->LeaveVT;
     pScrn->LeaveVT = glxDRILeaveVT;
 
@@ -1171,7 +1189,7 @@ __glXDRIscreenProbe(ScreenPtr pScreen)
     return NULL;
 }
 
-__GLXprovider __glXDRIProvider = {
+_X_EXPORT __GLXprovider __glXDRIProvider = {
     __glXDRIscreenProbe,
     "DRI",
     NULL

@@ -121,14 +121,17 @@
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
 
-/* Define to 1 if you have version 2.2 (or newer) of the drm library */
-#undef HAVE_LIBDRM_2_2
-
 /* Have Quartz */
 #undef XQUARTZ
 
-/* Build xpbproxy into Xquartz rather than a separate app */
-#undef INTEGRATED_XPBPROXY
+/* Support application updating through sparkle. */
+#undef XQUARTZ_SPARKLE
+
+/* Prefix to use for launchd identifiers */
+#undef LAUNCHD_ID_PREFIX
+
+/* Build a standalone xpbproxy */
+#undef STANDALONE_XPBPROXY
 
 /* Define to 1 if you have the `m' library (-lm). */
 #undef HAVE_LIBM
@@ -157,8 +160,20 @@
 /* Define to 1 if you have the <rpcsvc/dbm.h> header file. */
 #undef HAVE_RPCSVC_DBM_H
 
-/* Define to use libmd SHA1 functions instead of OpenSSL libcrypto */
+/* Define to use libc SHA1 functions */
+#undef HAVE_SHA1_IN_LIBC
+
+/* Define to use CommonCrypto SHA1 functions */
+#undef HAVE_SHA1_IN_COMMONCRYPTO
+
+/* Define to use libmd SHA1 functions */
 #undef HAVE_SHA1_IN_LIBMD
+
+/* Define to use libgcrypt SHA1 functions */
+#undef HAVE_SHA1_IN_LIBGCRYPT
+
+/* Define to use libsha1 for SHA1 */
+#undef HAVE_SHA1_IN_LIBSHA1
 
 /* Define to 1 if you have the `shmctl64' function. */
 #undef HAVE_SHMCTL64
@@ -215,6 +230,9 @@
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
+
+/* Define to 1 if you have the <fnmatch.h> header file. */
+#undef HAVE_FNMATCH_H
 
 /* Have /dev/urandom */
 #undef HAVE_URANDOM
@@ -318,15 +336,6 @@
 /* Support Xinerama extension */
 #undef XINERAMA
 
-/* Build XKB */
-#undef XKB
-
-/* Enable XKB per default */
-#undef XKB_DFLT_DISABLED
-
-/* Build XKB server */
-#undef XKB_IN_SERVER
-
 /* Vendor release */
 #undef XORG_RELEASE
 
@@ -366,19 +375,6 @@
 /* Vendor name */
 #undef XVENDORNAME
 
-/* Endian order */
-#undef _X_BYTE_ORDER
-/* Deal with multiple architecture compiles on Mac OS X */
-#ifndef __APPLE_CC__
-#define X_BYTE_ORDER _X_BYTE_ORDER
-#else
-#ifdef __BIG_ENDIAN__
-#define X_BYTE_ORDER X_BIG_ENDIAN
-#else
-#define X_BYTE_ORDER X_LITTLE_ENDIAN
-#endif
-#endif
-
 /* Enable GNU and other extensions to the C environment for GLIBC */
 #undef _GNU_SOURCE
 
@@ -403,6 +399,9 @@
 /* Support D-Bus */
 #undef HAVE_DBUS
 
+/* Use libudev for input hotplug */
+#undef CONFIG_UDEV
+
 /* Use D-Bus for input hotplug */
 #undef CONFIG_NEED_DBUS
 
@@ -414,9 +413,6 @@
 
 /* Use only built-in fonts */
 #undef BUILTIN_FONTS
-
-/* Use an empty root cursor */
-#undef NULL_ROOT_CURSOR
 
 /* Have a monotonic clock from clock_gettime() */
 #undef MONOTONIC_CLOCK
@@ -444,5 +440,12 @@
 
 /* Define to 1 if you have the `ffs' function. */
 #undef HAVE_FFS
+
+/* Correctly set _XSERVER64 for OSX fat binaries */
+#ifdef __APPLE__
+#include "dix-config-apple-verbatim.h"
+#endif
+
+#undef HAVE_AVC_NETLINK_ACQUIRE_FD
 
 #endif /* _DIX_CONFIG_H_ */

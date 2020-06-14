@@ -1,7 +1,6 @@
 /***********************************************************
 
 Copyright 1987, 1998  The Open Group
-Copyright 2004 Sun Microsystems, Inc.
 
 All rights reserved.
 
@@ -53,6 +52,29 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 SOFTWARE.
 
 ******************************************************************/
+
+/*
+ * Copyright © 2004 Sun Microsystems, Inc.  All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
 
 #ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
@@ -216,7 +238,7 @@ typedef struct _host {
 	int		requested;
 } HOST;
 
-#define MakeHost(h,l)	(h)=(HOST *) xalloc(sizeof *(h)+(l));\
+#define MakeHost(h,l)	(h)=xalloc(sizeof *(h)+(l));\
 			if (h) { \
 			   (h)->addr=(unsigned char *) ((h) + 1);\
 			   (h)->requested = FALSE; \
@@ -415,8 +437,7 @@ DefineSelf (int fd)
 		 */
 		if (family == FamilyInternet &&
 		    !(len == 4 &&
-		      ((addr[0] == 127 && addr[1] == 0 &&
-			addr[2] == 0 && addr[3] == 1) ||
+		      ((addr[0] == 127) ||
 		       (addr[0] == 0 && addr[1] == 0 &&
 			addr[2] == 0 && addr[3] == 0)))
 		      )
@@ -812,7 +833,8 @@ DefineSelf (int fd)
 		continue;
 #endif
 	    if ((ifr->ifa_flags & IFF_BROADCAST) &&
-		(ifr->ifa_flags & IFF_UP))
+		(ifr->ifa_flags & IFF_UP) &&
+                ifr->ifa_broadaddr)
 		broad_addr = *ifr->ifa_broadaddr;
 	    else
 		continue;
@@ -1095,7 +1117,7 @@ ResetHosts (char *display)
 }
 
 /* Is client on the local host */
-_X_EXPORT Bool LocalClient(ClientPtr client)
+Bool LocalClient(ClientPtr client)
 {
     int    		alen, family, notused;
     Xtransaddr		*from = NULL;
@@ -1109,12 +1131,12 @@ _X_EXPORT Bool LocalClient(ClientPtr client)
 	    &alen, (pointer *)&addr);
 	if (family == -1)
 	{
-	    xfree ((char *) from);
+	    xfree (from);
 	    return FALSE;
 	}
 	if (family == FamilyLocal)
 	{
-	    xfree ((char *) from);
+	    xfree (from);
 	    return TRUE;
 	}
 	for (host = selfhosts; host; host = host->next)
@@ -1122,7 +1144,7 @@ _X_EXPORT Bool LocalClient(ClientPtr client)
 	    if (addrEqual (family, addr, alen, host))
 		return TRUE;
 	}
-	xfree ((char *) from);
+	xfree (from);
     }
     return FALSE;
 }
@@ -1458,11 +1480,11 @@ GetHosts (
     for (host = validhosts; host; host = host->next)
     {
 	nHosts++;
-	n += (((host->len + 3) >> 2) << 2) + sizeof(xHostEntry);
+	n += pad_to_int32(host->len) + sizeof(xHostEntry);
     }
     if (n)
     {
-        *data = ptr = (pointer) xalloc (n);
+        *data = ptr = xalloc (n);
 	if (!ptr)
 	{
 	    return(BadAlloc);
@@ -1474,7 +1496,7 @@ GetHosts (
 	    ((xHostEntry *)ptr)->length = len;
 	    ptr += sizeof(xHostEntry);
 	    acopy (host->addr, ptr, len);
-	    ptr += ((len + 3) >> 2) << 2;
+	    ptr += pad_to_int32(len);
         }
     } else {
 	*data = NULL;
@@ -1721,7 +1743,7 @@ siTypeAdd(const char *typeName, siAddrMatchFunc addrMatch,
 	}
     }
 
-    s = (struct siType *) xalloc(sizeof(struct siType));
+    s = xalloc(sizeof(struct siType));
     if (s == NULL)
 	return BadAlloc;
 

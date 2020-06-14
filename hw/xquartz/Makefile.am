@@ -7,10 +7,16 @@ AM_CPPFLAGS = \
 	-DINXQUARTZ \
 	-DUSE_NEW_CLUT \
 	-DXFree86Server \
-	-I$(top_srcdir)/miext/rootless
+	-I$(top_srcdir)/miext/rootless \
+	-DX11LIBDIR=\"$(libdir)\"
 
-# GL
-SUBDIRS = bundle . xpr mach-startup doc pbproxy
+if GLX
+GL_DIR = GL
+endif
+
+SUBDIRS = bundle . $(GL_DIR) xpr pbproxy mach-startup doc
+
+DIST_SUBDIRS = bundle . GL xpr pbproxy mach-startup doc
 
 libXquartz_la_SOURCES = \
 	$(top_srcdir)/fb/fbcmap_mi.c \
@@ -27,7 +33,6 @@ libXquartz_la_SOURCES = \
 	quartzAudio.c \
 	quartzCocoa.m \
 	quartzKeyboard.c \
-	quartzPasteboard.c \
 	quartzStartup.c \
 	threadSafety.c
 
@@ -35,8 +40,8 @@ EXTRA_DIST = \
 	X11Application.h \
 	X11Controller.h \
 	applewmExt.h \
-	darwinClut8.h \
 	darwin.h \
+	darwinfb.h \
 	darwinEvents.h \
 	keysym2ucs.h \
 	pseudoramiX.h \
@@ -44,7 +49,6 @@ EXTRA_DIST = \
 	quartzAudio.h \
 	quartzCommon.h \
 	quartzKeyboard.h \
-	quartzPasteboard.h \
 	sanitizedCarbon.h \
 	sanitizedCocoa.h \
 	threadSafety.h

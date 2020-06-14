@@ -17,6 +17,7 @@ sdk_HEADERS =		\
 	dixfontstr.h	\
 	dixgrabs.h	\
 	dixstruct.h	\
+	events.h	\
 	exevents.h	\
 	extension.h	\
 	extinit.h	\
@@ -62,3 +63,8 @@ endif
 
 AM_CFLAGS = $(DIX_CFLAGS)
 
+EXTRA_DIST = 	\
+	dix-config-apple-verbatim.h \
+	eventconvert.h eventstr.h \
+	protocol-versions.h \
+	xsha1.h

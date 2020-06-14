@@ -138,42 +138,18 @@
 
 /* Global data */
 
-pciBusInfo_t *pciBusInfo = NULL;
-
-_X_EXPORT ADDRESS
-pciBusAddrToHostAddr(PCITAG tag, PciAddrType type, ADDRESS addr)
-{
-    if (pciBusInfo->funcs->pciAddrBusToHost)
-	return pciBusInfo->funcs->pciAddrBusToHost(tag, type, addr);
-    else
-	return addr;
-}
-
-_X_EXPORT PCITAG
+PCITAG
 pciTag(int busnum, int devnum, int funcnum)
 {
 	return(PCI_MAKE_TAG(busnum,devnum,funcnum));
 }
 
-ADDRESS
-pciAddrNOOP(PCITAG tag, PciAddrType type, ADDRESS addr)
-{
-	return(addr);
-}
-
-_X_EXPORT Bool
+Bool
 xf86scanpci(void)
 {
     Bool  success = FALSE;
 
     success = (pci_system_init() == 0);
-
-	/* XXX */
-#if defined(DEBUGPCI)
-	if (DEBUGPCI >= xf86Verbose) {
-	    xf86Verbose = DEBUGPCI;
-	}
-#endif
 
     /* choose correct platform/OS specific PCI init routine */
 	ARCH_PCI_INIT();

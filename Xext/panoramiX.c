@@ -31,7 +31,6 @@ Equipment Corporation.
 #include <dmx-config.h>
 #endif
 
-#define NEED_REPLIES
 #include <stdio.h>
 #include <X11/X.h>
 #include <X11/Xproto.h>
@@ -57,7 +56,7 @@ Equipment Corporation.
 #include "picturestr.h"
 #endif
 #include "modinit.h"
-
+#include "protocol-versions.h"
 
 #ifdef GLXPROXY
 extern VisualPtr glxMatchVisual(ScreenPtr pScreen,
@@ -71,9 +70,9 @@ extern VisualPtr glxMatchVisual(ScreenPtr pScreen,
 
 int 		PanoramiXPixWidth = 0;
 int 		PanoramiXPixHeight = 0;
-_X_EXPORT int 	PanoramiXNumScreens = 0;
+int 		PanoramiXNumScreens = 0;
 
-_X_EXPORT PanoramiXData *panoramiXdataPtr = NULL;
+PanoramiXData *panoramiXdataPtr = NULL;
 static RegionRec   	PanoramiXScreenRegion = {{0, 0, 0, 0}, NULL};
 
 static int		PanoramiXNumDepths;
@@ -81,14 +80,14 @@ static DepthPtr		PanoramiXDepths;
 static int		PanoramiXNumVisuals;
 static VisualPtr	PanoramiXVisuals;
 
-_X_EXPORT unsigned long XRC_DRAWABLE;
-_X_EXPORT unsigned long XRT_WINDOW;
-_X_EXPORT unsigned long XRT_PIXMAP;
-_X_EXPORT unsigned long XRT_GC;
-_X_EXPORT unsigned long XRT_COLORMAP;
+unsigned long XRC_DRAWABLE;
+unsigned long XRT_WINDOW;
+unsigned long XRT_PIXMAP;
+unsigned long XRT_GC;
+unsigned long XRT_COLORMAP;
 
 static Bool VisualsEqual(VisualPtr, ScreenPtr, VisualPtr);
-_X_EXPORT XineramaVisualsEqualProcPtr XineramaVisualsEqualPtr = &VisualsEqual;
+XineramaVisualsEqualProcPtr XineramaVisualsEqualPtr = &VisualsEqual;
 
 /*
  *	Function prototypes
@@ -328,7 +327,7 @@ XineramaDestroyClip(GCPtr pGC)
     Xinerama_GC_FUNC_EPILOGUE (pGC);
 }
 
-_X_EXPORT int
+int
 XineramaDeleteResource(pointer data, XID id)
 {
     xfree(data);
@@ -353,9 +352,12 @@ PanoramiXRes *
 PanoramiXFindIDByScrnum(RESTYPE type, XID id, int screen)
 {
     PanoramiXSearchData data;
+    pointer val;
 
-    if(!screen) 
-	return LookupIDByType(id, type);
+    if(!screen) {
+	dixLookupResourceByType(&val, id, type, serverClient, DixReadAccess);
+	return val;
+    }
 
     data.screen = screen;
     data.id = id;
@@ -371,7 +373,7 @@ typedef struct _connect_callback_list {
 
 static XineramaConnectionCallbackList *ConnectionCallbackList = NULL;
 
-_X_EXPORT Bool
+Bool
 XineramaRegisterConnectionBlockCallback(void (*func)(void))
 {
     XineramaConnectionCallbackList *newlist;
@@ -501,15 +503,23 @@ void PanoramiXExtensionInit(int argc, char *argv[])
 	}
 
 	XRC_DRAWABLE = CreateNewResourceClass();
-	XRT_WINDOW = CreateNewResourceType(XineramaDeleteResource) | 
-						XRC_DRAWABLE;
-	XRT_PIXMAP = CreateNewResourceType(XineramaDeleteResource) | 
-						XRC_DRAWABLE;
-	XRT_GC = CreateNewResourceType(XineramaDeleteResource);
-	XRT_COLORMAP = CreateNewResourceType(XineramaDeleteResource);
+	XRT_WINDOW = CreateNewResourceType(XineramaDeleteResource,
+					   "XineramaWindow");
+	if (XRT_WINDOW)
+	    XRT_WINDOW |= XRC_DRAWABLE;
+	XRT_PIXMAP = CreateNewResourceType(XineramaDeleteResource,
+					   "XineramaPixmap");
+	if (XRT_PIXMAP)
+	    XRT_PIXMAP |= XRC_DRAWABLE;
+	XRT_GC = CreateNewResourceType(XineramaDeleteResource,
+				       "XineramaGC");
+	XRT_COLORMAP = CreateNewResourceType(XineramaDeleteResource,
+					     "XineramaColormap");
 
-	panoramiXGeneration = serverGeneration;
-	success = TRUE;
+	if (XRT_WINDOW && XRT_PIXMAP && XRT_GC && XRT_COLORMAP) {
+	    panoramiXGeneration = serverGeneration;
+	    success = TRUE;
+	}
     }
 
     if (!success) {
@@ -550,8 +560,8 @@ void PanoramiXExtensionInit(int argc, char *argv[])
     ProcVector[X_SetClipRectangles] = PanoramiXSetClipRectangles;
     ProcVector[X_FreeGC] = PanoramiXFreeGC;
     ProcVector[X_ClearArea] = PanoramiXClearToBackground;
-    ProcVector[X_CopyArea] = PanoramiXCopyArea;;
-    ProcVector[X_CopyPlane] = PanoramiXCopyPlane;;
+    ProcVector[X_CopyArea] = PanoramiXCopyArea;
+    ProcVector[X_CopyPlane] = PanoramiXCopyPlane;
     ProcVector[X_PolyPoint] = PanoramiXPolyPoint;
     ProcVector[X_PolyLine] = PanoramiXPolyLine;
     ProcVector[X_PolySegment] = PanoramiXPolySegment;
@@ -574,10 +584,10 @@ void PanoramiXExtensionInit(int argc, char *argv[])
     ProcVector[X_AllocColor] = PanoramiXAllocColor;
     ProcVector[X_AllocNamedColor] = PanoramiXAllocNamedColor;
     ProcVector[X_AllocColorCells] = PanoramiXAllocColorCells;
-    ProcVector[X_AllocColorPlanes] = PanoramiXAllocColorPlanes;    
+    ProcVector[X_AllocColorPlanes] = PanoramiXAllocColorPlanes;
     ProcVector[X_FreeColors] = PanoramiXFreeColors;
-    ProcVector[X_StoreColors] = PanoramiXStoreColors;    
-    ProcVector[X_StoreNamedColor] = PanoramiXStoreNamedColor;    
+    ProcVector[X_StoreColors] = PanoramiXStoreColors;
+    ProcVector[X_StoreNamedColor] = PanoramiXStoreNamedColor;
 
 #ifdef RENDER
     PanoramiXRenderInit ();
@@ -665,7 +675,7 @@ Bool PanoramiXCreateConnectionBlock(void)
 	length += (depth->nVisuals * sizeof(xVisualType));
     }
 
-    connSetupPrefix.length = length >> 2;
+    connSetupPrefix.length = bytes_to_int32(length);
 
     for (i = 0; i < PanoramiXNumDepths; i++)
 	xfree(PanoramiXDepths[i].vids);
@@ -839,7 +849,7 @@ PanoramiXConsolidate(void)
     AddResource(defmap->info[0].id, XRT_COLORMAP, defmap);
 }
 
-_X_EXPORT VisualID
+VisualID
 PanoramiXTranslateVisualID(int screen, VisualID orig)
 {
     ScreenPtr pOtherScreen = screenInfo.screens[screen];
@@ -903,8 +913,8 @@ ProcPanoramiXQueryVersion (ClientPtr client)
     rep.type = X_Reply;
     rep.length = 0;
     rep.sequenceNumber = client->sequence;
-    rep.majorVersion = PANORAMIX_MAJOR_VERSION;
-    rep.minorVersion = PANORAMIX_MINOR_VERSION;   
+    rep.majorVersion = SERVER_PANORAMIX_MAJOR_VERSION;
+    rep.minorVersion = SERVER_PANORAMIX_MINOR_VERSION;
     if (client->swapped) { 
         swaps(&rep.sequenceNumber, n);
         swapl(&rep.length, n);     
@@ -1049,7 +1059,7 @@ ProcXineramaQueryScreens(ClientPtr client)
     rep.type = X_Reply;
     rep.sequenceNumber = client->sequence;
     rep.number = (noPanoramiXExtension) ? 0 : PanoramiXNumScreens;
-    rep.length = rep.number * sz_XineramaScreenInfo >> 2;
+    rep.length = bytes_to_int32(rep.number * sz_XineramaScreenInfo);
     if (client->swapped) {
 	int n;
 	swaps (&rep.sequenceNumber, n);

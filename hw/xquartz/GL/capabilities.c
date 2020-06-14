@@ -103,7 +103,7 @@ static void handleStencilModes(struct glCapabilitiesConfig *c, GLint smodes) {
 }
 
 static int handleColorAndAccumulation(struct glColorBufCapabilities *c, 
-				       GLint cmodes) {
+				       GLint cmodes, int forAccum) {
     int offset = 0;
         
     /*1*/
@@ -204,6 +204,16 @@ static int handleColorAndAccumulation(struct glColorBufCapabilities *c,
 	++offset;
     }
 
+    if(forAccum) {
+//#if 0
+    /* FIXME
+     * Disable this path, because some part of libGL, X, or Xplugin 
+     * doesn't work with sizes greater than 8.
+     * When this is enabled and visuals are chosen using depths
+     * such as 16, the result is that the windows don't redraw
+     * and are often white, until a resize.
+     */
+
     /*12*/
     if(kCGLRGB101010Bit & cmodes) {
 	c[offset].r = 10;
@@ -265,6 +275,8 @@ static int handleColorAndAccumulation(struct glColorBufCapabilities *c,
 	c[offset].a = 16;
 	++offset;
     }
+    }
+//#endif
 
     /* FIXME should we handle the floating point color modes, and if so, how? */
       
@@ -274,22 +286,71 @@ static int handleColorAndAccumulation(struct glColorBufCapabilities *c,
 
 static void handleColorModes(struct glCapabilitiesConfig *c, GLint cmodes) {
     c->total_color_buffers = handleColorAndAccumulation(c->color_buffers,
-							cmodes);
+							cmodes, 0);
     
     assert(c->total_color_buffers < GLCAPS_COLOR_BUFFERS);
 }
 
 static void handleAccumulationModes(struct glCapabilitiesConfig *c, GLint cmodes) {
     c->total_accum_buffers = handleColorAndAccumulation(c->accum_buffers,
-							cmodes);
+							cmodes, 1);
     assert(c->total_accum_buffers < GLCAPS_COLOR_BUFFERS);
+}
+
+static void handleDepthModes(struct glCapabilitiesConfig *c, GLint dmodes) {
+    int offset = 0;
+#define DEPTH(flag,value) do { \
+	if(dmodes & flag) { \
+	    c->depth_buffers[offset++] = value; \
+	} \
+    } while(0)
+
+    /*1*/
+    DEPTH(kCGL0Bit, 0);
+    /*2*/
+    DEPTH(kCGL1Bit, 1);
+    /*3*/
+    DEPTH(kCGL2Bit, 2);
+    /*4*/
+    DEPTH(kCGL3Bit, 3);
+    /*5*/
+    DEPTH(kCGL4Bit, 4);
+    /*6*/
+    DEPTH(kCGL5Bit, 5);
+    /*7*/
+    DEPTH(kCGL6Bit, 6);
+    /*8*/
+    DEPTH(kCGL8Bit, 8);
+    /*9*/
+    DEPTH(kCGL10Bit, 10);
+    /*10*/
+    DEPTH(kCGL12Bit, 12);
+    /*11*/
+    DEPTH(kCGL16Bit, 16);
+    /*12*/
+    DEPTH(kCGL24Bit, 24);
+    /*13*/
+    DEPTH(kCGL32Bit, 32);
+    /*14*/
+    DEPTH(kCGL48Bit, 48);
+    /*15*/
+    DEPTH(kCGL64Bit, 64);
+    /*16*/
+    DEPTH(kCGL96Bit, 96);
+    /*17*/
+    DEPTH(kCGL128Bit, 128);
+
+#undef DEPTH
+
+    c->total_depth_buffer_depths = offset;
+    assert(c->total_depth_buffer_depths < GLCAPS_DEPTH_BUFFERS);
 }
 
 /* Return non-zero if an error occured. */
 static CGLError handleRendererDescriptions(CGLRendererInfoObj info, GLint r, 
 					   struct glCapabilitiesConfig *c) {
     CGLError err;
-    GLint accelerated = 0, flags = 0, aux = 0;
+    GLint accelerated = 0, flags = 0, aux = 0, samplebufs = 0, samples = 0;
 
     err = CGLDescribeRenderer (info, r, kCGLRPAccelerated, &accelerated);
 
@@ -313,7 +374,34 @@ static CGLError handleRendererDescriptions(CGLRendererInfoObj info, GLint r,
 	return err;
     
     c->aux_buffers = aux;
+
     
+    /* Depth buffer size */
+    err = CGLDescribeRenderer(info, r, kCGLRPDepthModes, &flags);
+    
+    if(err)
+	return err;
+
+    handleDepthModes(c, flags);
+
+
+    /* Multisample buffers */
+    err = CGLDescribeRenderer(info, r, kCGLRPMaxSampleBuffers, &samplebufs);
+
+    if(err)
+	return err;
+
+    c->multisample_buffers = samplebufs;
+    
+
+    /* Multisample samples per multisample buffer */
+    err = CGLDescribeRenderer(info, r, kCGLRPMaxSamples, &samples);
+
+    if(err)
+	return err;
+
+    c->multisample_samples = samples;
+
 
     /* Stencil bit depths */
     err = CGLDescribeRenderer(info, r, kCGLRPStencilModes, &flags);
@@ -339,7 +427,7 @@ static CGLError handleRendererDescriptions(CGLRendererInfoObj info, GLint r,
 
     handleAccumulationModes(c, flags);
     
-    return 0;
+    return kCGLNoError;
 }
 
 static void initCapabilities(struct glCapabilities *cap) {
@@ -352,8 +440,18 @@ static void initConfig(struct glCapabilitiesConfig *c) {
 
     c->accelerated = false;
     c->stereo = false;
-    c->buffers = 0;
     c->aux_buffers = 0;
+    c->buffers = 0;
+
+    c->total_depth_buffer_depths = 0;
+
+    for(i = 0; i < GLCAPS_DEPTH_BUFFERS; ++i) {
+	c->depth_buffers[i] = GLCAPS_INVALID_DEPTH_VALUE;
+    }
+
+    c->multisample_buffers = 0;
+    c->multisample_samples = 0;
+
     c->total_stencil_bit_depths = 0;
 
     for(i = 0; i < GLCAPS_STENCIL_BIT_DEPTH_BUFFERS; ++i) {
@@ -395,56 +493,36 @@ void freeGlCapabilities(struct glCapabilities *cap) {
     cap->configurations = NULL;    
 }
 
-enum { MAX_DISPLAYS = 3 };
-
 /*Return true if an error occured. */
 bool getGlCapabilities(struct glCapabilities *cap) {
-    CGDirectDisplayID dspys[MAX_DISPLAYS];
-    CGDisplayErr err;
-    CGOpenGLDisplayMask displayMask;
-    CGDisplayCount i, displayCount = 0;
+	CGLRendererInfoObj info;
+    CGLError err;
+	GLint numRenderers = 0, r;
 
     initCapabilities(cap);
-    
-    err = CGGetActiveDisplayList(MAX_DISPLAYS, dspys, &displayCount);
+
+	err = CGLQueryRendererInfo((GLuint)-1, &info, &numRenderers);
     if(err) {
-	fprintf(stderr, "CGGetActiveDisplayList error: %s\n", CGLErrorString(err));
-	return true;
-    }
- 
-    for(i = 0; i < displayCount; ++i) {
-        displayMask = CGDisplayIDToOpenGLDisplayMask(dspys[i]);
-       
-	CGLRendererInfoObj info;
-	GLint numRenderers = 0, r, renderCount = 0;
-	    
-	err = CGLQueryRendererInfo(displayMask, &info, &numRenderers);
-
-        if(err) {
 	    fprintf(stderr, "CGLQueryRendererInfo error: %s\n", CGLErrorString(err));
-	    fprintf(stderr, "trying to continue...\n");
-	    continue;
+        return err;
 	}
-			
-	CGLDescribeRenderer(info, 0, kCGLRPRendererCount, &renderCount);
 
-	for(r = 0; r < renderCount; ++r) {
-	    CGLError derr;
+	for(r = 0; r < numRenderers; r++) {
 	    struct glCapabilitiesConfig tmpconf, *conf;
 
 	    initConfig(&tmpconf);
 
-	    derr = handleRendererDescriptions(info, r, &tmpconf);
-	    if(derr) {
-		fprintf(stderr, "error: %s\n", CGLErrorString(derr));
-		fprintf(stderr, "trying to continue...\n");
-		continue;
+	    err = handleRendererDescriptions(info, r, &tmpconf);
+	    if(err) {
+            fprintf(stderr, "handleRendererDescriptions returned error: %s\n", CGLErrorString(err));
+            fprintf(stderr, "trying to continue...\n");
+            continue;
 	    }
 
 	    conf = malloc(sizeof(*conf));
 	    if(NULL == conf) {
-		perror("malloc");
-		abort();
+            perror("malloc");
+            abort();
 	    }
 
 	    /* Copy the struct. */
@@ -455,9 +533,8 @@ bool getGlCapabilities(struct glCapabilities *cap) {
 	    cap->configurations = conf;
 	}
 
-    	CGLDestroyRendererInfo(info);
-    }
-    
+    CGLDestroyRendererInfo(info);
+
     /* No error occured.  We are done. */
-    return false;
+    return kCGLNoError;
 }

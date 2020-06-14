@@ -42,6 +42,7 @@
 #include "glxserver.h"
 #include "glxutil.h"
 #include "glxext.h"
+#include "protocol-versions.h"
 
 static int glxScreenPrivateKeyIndex;
 static DevPrivateKey glxScreenPrivateKey = &glxScreenPrivateKeyIndex;
@@ -162,7 +163,8 @@ static const char GLServerExtensions[] =
 ** supported across all screens in a multi-screen system.
 */
 static char GLXServerVendorName[] = "SGI";
-static char GLXServerVersion[] = "1.2";
+unsigned glxMajorVersion = SERVER_GLX_MAJOR_VERSION;
+unsigned glxMinorVersion = SERVER_GLX_MINOR_VERSION;
 static char GLXServerExtensions[] =
 			"GLX_ARB_multisample "
 			"GLX_EXT_visual_info "
@@ -177,7 +179,9 @@ static char GLXServerExtensions[] =
                         "GLX_SGIX_swap_barrier "
 #endif
 			"GLX_SGIX_fbconfig "
+			"GLX_SGIX_pbuffer "
 			"GLX_MESA_copy_sub_buffer "
+                        "GLX_INTEL_swap_event"
 			;
 
 /*
@@ -211,6 +215,7 @@ glxCloseScreen (int index, ScreenPtr pScreen)
     __GLXscreen *pGlxScreen = glxGetScreen(pScreen);
 
     pScreen->CloseScreen = pGlxScreen->CloseScreen;
+    pScreen->DestroyWindow = pGlxScreen->DestroyWindow;
 
     pGlxScreen->destroy(pGlxScreen);
 
@@ -223,8 +228,8 @@ glxGetScreen(ScreenPtr pScreen)
     return dixLookupPrivate(&pScreen->devPrivates, glxScreenPrivateKey);
 }
 
-void GlxSetVisualConfigs(int nconfigs, 
-                         __GLXvisualConfig *configs, void **privates)
+_X_EXPORT void GlxSetVisualConfigs(int nconfigs,
+                         void *configs, void **privates)
 {
     /* We keep this stub around for the DDX drivers that still
      * call it. */
@@ -242,54 +247,13 @@ GLint glxConvertToXVisualType(int visualType)
 	? x_visual_types[ visualType - GLX_TRUE_COLOR ] : -1;
 }
 
-
-static void
-filterOutNativeConfigs(__GLXscreen *pGlxScreen)
-{
-    __GLXconfig *m, *next, **last;
-    ScreenPtr pScreen = pGlxScreen->pScreen;
-    int i, depth;
-
-    last = &pGlxScreen->fbconfigs;
-    for (m = pGlxScreen->fbconfigs; m != NULL; m = next) {
-	next = m->next;
-	depth = m->redBits + m->blueBits + m->greenBits;
-
-	for (i = 0; i < pScreen->numVisuals; i++) {
-	    if (pScreen->visuals[i].nplanes == depth) {
-		*last = m;
-		last = &m->next;
-		break;
-	    }
-	}
-    }
-
-    *last = NULL;
-}
-
-static XID
-findVisualForConfig(ScreenPtr pScreen, __GLXconfig *m)
-{
-    int i;
-
-    for (i = 0; i < pScreen->numVisuals; i++) {
-	if (glxConvertToXVisualType(m->visualType) == pScreen->visuals[i].class)
-	    return pScreen->visuals[i].vid;
-    }
-
-    return 0;
-}
-
 /* This code inspired by composite/compinit.c.  We could move this to
  * mi/ and share it with composite.*/
 
 static VisualPtr
 AddScreenVisuals(ScreenPtr pScreen, int count, int d)
 {
-    XID		*installedCmaps, *vids, vid;
-    int		 numInstalledCmaps, numVisuals, i, j;
-    VisualPtr	 visuals;
-    ColormapPtr	 installedCmap;
+    int		 i;
     DepthPtr	 depth;
 
     depth = NULL;
@@ -302,54 +266,8 @@ AddScreenVisuals(ScreenPtr pScreen, int count, int d)
     if (depth == NULL)
 	return NULL;
 
-    /* Find the installed colormaps */
-    installedCmaps = xalloc (pScreen->maxInstalledCmaps * sizeof (XID));
-    if (!installedCmaps)
-	return NULL;
-
-    numInstalledCmaps = pScreen->ListInstalledColormaps(pScreen, installedCmaps);
-
-    /* realloc the visual array to fit the new one in place */
-    numVisuals = pScreen->numVisuals;
-    visuals = xrealloc(pScreen->visuals, (numVisuals + count) * sizeof(VisualRec));
-    if (!visuals) {
-	xfree(installedCmaps);
-	return NULL;
-    }
-
-    vids = xrealloc(depth->vids, (depth->numVids + count) * sizeof(XID));
-    if (vids == NULL) {
-	xfree(installedCmaps);
-	xfree(visuals);
-	return NULL;
-    }
-
-    /*
-     * Fix up any existing installed colormaps -- we'll assume that
-     * the only ones created so far have been installed.  If this
-     * isn't true, we'll have to walk the resource database looking
-     * for all colormaps.
-     */
-    for (i = 0; i < numInstalledCmaps; i++) {
-	installedCmap = LookupIDByType (installedCmaps[i], RT_COLORMAP);
-	if (!installedCmap)
-	    continue;
-	j = installedCmap->pVisual - pScreen->visuals;
-	installedCmap->pVisual = &visuals[j];
-    }
-
-    xfree(installedCmaps);
-
-    for (i = 0; i < count; i++) {
-	vid = FakeClientID(0);
-	visuals[pScreen->numVisuals + i].vid = vid;
-	vids[depth->numVids + i] = vid;
-    }
-
-    pScreen->visuals = visuals;
-    pScreen->numVisuals += count;
-    depth->vids = vids;
-    depth->numVids += count;
+    if (ResizeVisualArray(pScreen, count, depth) == FALSE)
+        return NULL;
 
     /* Return a pointer to the first of the added visuals. */ 
     return pScreen->visuals + pScreen->numVisuals - count;
@@ -387,156 +305,158 @@ initGlxVisual(VisualPtr visual, __GLXconfig *config)
     visual->offsetBlue = findFirstSet(config->blueMask);
 }
 
-typedef struct {
-    GLboolean doubleBuffer;
-    GLboolean depthBuffer;
-    GLboolean stencilBuffer;
-} FBConfigTemplateRec, *FBConfigTemplatePtr;
-
 static __GLXconfig *
-pickFBConfig(__GLXscreen *pGlxScreen, FBConfigTemplatePtr template, int class)
+pickFBConfig(__GLXscreen *pGlxScreen, VisualPtr visual)
 {
-    __GLXconfig *config;
+    __GLXconfig *best = NULL, *config;
+    int best_score = 0;
 
     for (config = pGlxScreen->fbconfigs; config != NULL; config = config->next) {
+	int score = 0;
+
+	if (config->redMask != visual->redMask ||
+	    config->greenMask != visual->greenMask ||
+	    config->blueMask != visual->blueMask)
+	    continue;
 	if (config->visualRating != GLX_NONE)
 	    continue;
-	if (glxConvertToXVisualType(config->visualType) != class)
+	if (glxConvertToXVisualType(config->visualType) != visual->class)
 	    continue;
-	if ((config->doubleBufferMode > 0) != template->doubleBuffer)
+	/* If it's the 32-bit RGBA visual, demand a 32-bit fbconfig. */
+	if (visual->nplanes == 32 && config->rgbBits != 32)
 	    continue;
-	if ((config->depthBits > 0) != template->depthBuffer)
-	    continue;
-	if ((config->stencilBits > 0) != template->stencilBuffer)
+	/* Can't use the same FBconfig for multiple X visuals.  I think. */
+	if (config->visualID != 0)
 	    continue;
 
-	return config;
+	if (config->doubleBufferMode > 0)
+	    score += 8;
+	if (config->depthBits > 0)
+	    score += 4;
+	if (config->stencilBits > 0)
+	    score += 2;
+	if (config->alphaBits > 0)
+	    score++;
+
+	if (score > best_score) {
+	    best = config;
+	    best_score = score;
+	}
     }
 
-    return NULL;
+    return best;
 }
 
-static void
-addMinimalSet(__GLXscreen *pGlxScreen)
+static Bool
+glxDestroyWindow(WindowPtr pWin)
 {
-    __GLXconfig *config;
-    VisualPtr visuals;
-    int i, j;
-    FBConfigTemplateRec best = { GL_TRUE, GL_TRUE, GL_TRUE };
-    FBConfigTemplateRec good = { GL_TRUE, GL_TRUE, GL_FALSE };
-    FBConfigTemplateRec minimal = { GL_FALSE, GL_FALSE, GL_FALSE };
+    ScreenPtr pScreen = pWin->drawable.pScreen;
+    __GLXscreen *pGlxScreen = glxGetScreen(pScreen);
+    Bool retval = TRUE;
 
-    pGlxScreen->visuals = xcalloc(pGlxScreen->pScreen->numVisuals,
-				  sizeof (__GLXconfig *));
-    if (pGlxScreen->visuals == NULL) {
-	ErrorF("Failed to allocate for minimal set of GLX visuals\n");
-	return;
+    FreeResource(pWin->drawable.id, FALSE);
+
+    /* call lower wrapped functions */
+    if (pGlxScreen->DestroyWindow) {
+	/* unwrap */
+	pScreen->DestroyWindow = pGlxScreen->DestroyWindow;
+
+	/* call lower layers */
+	retval = (*pScreen->DestroyWindow)(pWin);
+
+	/* rewrap */
+	pGlxScreen->DestroyWindow = pScreen->DestroyWindow;
+	pScreen->DestroyWindow = glxDestroyWindow;
     }
 
-    visuals = pGlxScreen->pScreen->visuals;
-    for (i = 0, j = 0; i < pGlxScreen->pScreen->numVisuals; i++) {
-	if (visuals[i].nplanes == 32)
-	    config = pickFBConfig(pGlxScreen, &minimal, visuals[i].class);
-	else {
-	    config = pickFBConfig(pGlxScreen, &best, visuals[i].class);
-	    if (config == NULL)
-		config = pickFBConfig(pGlxScreen, &good, visuals[i].class);
-        }
-	if (config == NULL)
-	    config = pGlxScreen->fbconfigs;
-	if (config == NULL)
-	    continue;
-
-	pGlxScreen->visuals[j] = config;
-	config->visualID = visuals[i].vid;
-	j++;
-    }
-
-    pGlxScreen->numVisuals = j;
-}
-
-static void
-addTypicalSet(__GLXscreen *pGlxScreen)
-{
-    addMinimalSet(pGlxScreen);
-}
-
-static void
-addFullSet(__GLXscreen *pGlxScreen)
-{
-    __GLXconfig *config;
-    VisualPtr visuals;
-    int i, depth;
-
-    pGlxScreen->visuals =
-	xcalloc(pGlxScreen->numFBConfigs, sizeof (__GLXconfig *));
-    if (pGlxScreen->visuals == NULL) {
-	ErrorF("Failed to allocate for full set of GLX visuals\n");
-	return;
-    }
-
-    config = pGlxScreen->fbconfigs;
-    depth = config->redBits + config->greenBits + config->blueBits;
-    visuals = AddScreenVisuals(pGlxScreen->pScreen, pGlxScreen->numFBConfigs, depth);
-    if (visuals == NULL) {
-	xfree(pGlxScreen->visuals);
-	return;
-    }
-
-    pGlxScreen->numVisuals = pGlxScreen->numFBConfigs;
-    for (i = 0, config = pGlxScreen->fbconfigs; config; config = config->next, i++) {
-	pGlxScreen->visuals[i] = config;
-	initGlxVisual(&visuals[i], config);
-    }
-}
-
-static int glxVisualConfig = GLX_ALL_VISUALS;
-
-void GlxSetVisualConfig(int config)
-{
-    glxVisualConfig = config;
+    return retval;
 }
 
 void __glXScreenInit(__GLXscreen *pGlxScreen, ScreenPtr pScreen)
 {
     __GLXconfig *m;
+    __GLXconfig *config;
     int i;
 
     pGlxScreen->pScreen       = pScreen;
     pGlxScreen->GLextensions  = xstrdup(GLServerExtensions);
     pGlxScreen->GLXvendor     = xstrdup(GLXServerVendorName);
-    pGlxScreen->GLXversion    = xstrdup(GLXServerVersion);
     pGlxScreen->GLXextensions = xstrdup(GLXServerExtensions);
+
+    /* All GLX providers must support all of the functionality required for at
+     * least GLX 1.2.  If the provider supports a higher version, the GLXminor
+     * version can be changed in the provider's screen-probe routine.  For
+     * most providers, the screen-probe routine is the caller of this
+     * function.
+     */
+    pGlxScreen->GLXmajor      = 1;
+    pGlxScreen->GLXminor      = 2;
 
     pGlxScreen->CloseScreen = pScreen->CloseScreen;
     pScreen->CloseScreen = glxCloseScreen;
-
-    filterOutNativeConfigs(pGlxScreen);
+    pGlxScreen->DestroyWindow = pScreen->DestroyWindow;
+    pScreen->DestroyWindow = glxDestroyWindow;
 
     i = 0;
     for (m = pGlxScreen->fbconfigs; m != NULL; m = m->next) {
 	m->fbconfigID = FakeClientID(0);
-	m->visualID = findVisualForConfig(pScreen, m);
+	m->visualID = 0;
 	i++;
     }
     pGlxScreen->numFBConfigs = i;
 
-    /* Select a subset of fbconfigs that we send to the client when it
-     * asks for the glx visuals.  All the fbconfigs here have a valid
-     * value for visual ID and each visual ID is only present once.
-     * This runs before composite adds its extra visual so we have to
-     * remember the number of visuals here.*/
+    pGlxScreen->visuals =
+	xcalloc(pGlxScreen->numFBConfigs, sizeof (__GLXconfig *));
 
-    switch (glxVisualConfig) {
-    case GLX_MINIMAL_VISUALS:
-	addMinimalSet(pGlxScreen);
-	break;
-    case GLX_TYPICAL_VISUALS:
-	addTypicalSet(pGlxScreen);
-	break;
-    case GLX_ALL_VISUALS:
-	addFullSet(pGlxScreen);
-	break;
+    /* First, try to choose featureful FBconfigs for the existing X visuals.
+     * Note that if multiple X visuals end up with the same FBconfig being
+     * chosen, the later X visuals don't get GLX visuals (because we want to
+     * prioritize the root visual being GLX).
+     */
+    for (i = 0; i < pScreen->numVisuals; i++) {
+	VisualPtr visual = &pScreen->visuals[i];
+
+	config = pickFBConfig(pGlxScreen, visual);
+	if (config) {
+	    pGlxScreen->visuals[pGlxScreen->numVisuals++] = config;
+	    config->visualID = visual->vid;
+	}
+    }
+
+    /* Then, add new visuals corresponding to all FBconfigs that didn't have
+     * an existing, appropriate visual.
+     */
+    for (config = pGlxScreen->fbconfigs; config != NULL; config = config->next) {
+	int depth;
+
+	VisualPtr visual;
+
+	if (config->visualID != 0)
+	    continue;
+
+	/* Only count RGB bits and not alpha, as we're not trying to create
+	 * visuals for compositing (that's what the 32-bit composite visual
+	 * set up above is for.
+	 */
+	depth = config->redBits + config->greenBits + config->blueBits;
+
+	/* Make sure that our FBconfig's depth can actually be displayed
+	 * (corresponds to an existing visual).
+	 */
+	for (i = 0; i < pScreen->numVisuals; i++) {
+	    if (depth == pScreen->visuals[i].nplanes)
+		break;
+	}
+	if (i == pScreen->numVisuals)
+	    continue;
+
+	/* Create a new X visual for our FBconfig. */
+	visual = AddScreenVisuals(pScreen, 1, depth);
+	if (visual == NULL)
+	    continue;
+
+	pGlxScreen->visuals[pGlxScreen->numVisuals++] = config;
+	initGlxVisual(visual, config);
     }
 
     dixSetPrivate(&pScreen->devPrivates, glxScreenPrivateKey, pGlxScreen);
@@ -545,7 +465,6 @@ void __glXScreenInit(__GLXscreen *pGlxScreen, ScreenPtr pScreen)
 void __glXScreenDestroy(__GLXscreen *screen)
 {
     xfree(screen->GLXvendor);
-    xfree(screen->GLXversion);
     xfree(screen->GLXextensions);
     xfree(screen->GLextensions);
 }

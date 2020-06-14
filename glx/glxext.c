@@ -28,7 +28,6 @@
  * Silicon Graphics, Inc.
  */
 
-#define NEED_REPLIES
 #ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
 #endif
@@ -37,6 +36,7 @@
 #include "glxserver.h"
 #include <windowstr.h>
 #include <propertyst.h>
+#include <registry.h>
 #include "privates.h"
 #include <os.h>
 #include "g_disptab.h"
@@ -51,6 +51,7 @@
 ** from the server's perspective.
 */
 __GLXcontext *__glXLastContext;
+__GLXcontext *__glXContextList;
 
 /*
 ** X resources.
@@ -112,31 +113,79 @@ static int ContextGone(__GLXcontext* cx, XID id)
     return True;
 }
 
+static __GLXcontext *glxPendingDestroyContexts;
+static __GLXcontext *glxAllContexts;
+static int glxServerLeaveCount;
+static int glxBlockClients;
+
 /*
 ** Destroy routine that gets called when a drawable is freed.  A drawable
 ** contains the ancillary buffers needed for rendering.
 */
 static Bool DrawableGone(__GLXdrawable *glxPriv, XID xid)
 {
-    ScreenPtr pScreen = glxPriv->pDraw->pScreen;
+    __GLXcontext *c;
 
-    switch (glxPriv->type) {
-	case GLX_DRAWABLE_PIXMAP:
-	case GLX_DRAWABLE_PBUFFER:
-	    (*pScreen->DestroyPixmap)((PixmapPtr) glxPriv->pDraw);
-	    break;
+    for (c = glxAllContexts; c; c = c->next) {
+	if (c->isCurrent && (c->drawPriv == glxPriv || c->readPriv == glxPriv)) {
+	    int i;
+
+	    (*c->loseCurrent)(c);
+	    c->isCurrent = GL_FALSE;
+	    if (c == __glXLastContext)
+		__glXFlushContextCache();
+
+	    for (i = 1; i < currentMaxClients; i++) {
+		if (clients[i]) {
+		    __GLXclientState *cl = glxGetClient(clients[i]);
+
+		    if (cl->inUse) {
+			int j;
+
+			for (j = 0; j < cl->numCurrentContexts; j++) {
+			    if (cl->currentContexts[j] == c)
+				cl->currentContexts[j] = NULL;
+			}
+		    }
+		}
+	    }
+
+	    if (!c->idExists) {
+		__glXFreeContext(c);
+	    }
+	}
+	if (c->drawPriv == glxPriv)
+	    c->drawPriv = NULL;
+	if (c->readPriv == glxPriv)
+	    c->readPriv = NULL;
     }
 
-    glxPriv->pDraw = NULL;
-    glxPriv->drawId = 0;
-    __glXUnrefDrawable(glxPriv);
+    glxPriv->destroy(glxPriv);
 
     return True;
 }
 
-static __GLXcontext *glxPendingDestroyContexts;
-static int glxServerLeaveCount;
-static int glxBlockClients;
+void __glXAddToContextList(__GLXcontext *cx)
+{
+    cx->next = glxAllContexts;
+    glxAllContexts = cx;
+}
+
+static void __glXRemoveFromContextList(__GLXcontext *cx)
+{
+    __GLXcontext *c, *prev;
+
+    if (cx == glxAllContexts)
+	glxAllContexts = cx->next;
+    else {
+	prev = glxAllContexts;
+	for (c = glxAllContexts; c; c = c->next) {
+	    if (c == cx)
+		prev->next = c->next;
+	    prev = c;
+	}
+    }
+}
 
 /*
 ** Free a context.
@@ -150,6 +199,8 @@ GLboolean __glXFreeContext(__GLXcontext *cx)
     if (cx == __glXLastContext) {
 	__glXFlushContextCache();
     }
+
+    __glXRemoveFromContextList(cx);
 
     /* We can get here through both regular dispatching from
      * __glXDispatch() or as a callback from the resource manager.  In
@@ -216,6 +267,7 @@ GLboolean __glXErrorOccured(void)
 }
 
 static int __glXErrorBase;
+int __glXEventBase;
 
 int __glXError(int error)
 {
@@ -292,9 +344,14 @@ void GlxExtensionInit(void)
     __GLXprovider *p;
     Bool glx_provided = False;
 
-    __glXContextRes = CreateNewResourceType((DeleteType)ContextGone);
-    __glXDrawableRes = CreateNewResourceType((DeleteType)DrawableGone);
-    __glXSwapBarrierRes = CreateNewResourceType((DeleteType)SwapBarrierGone);
+    __glXContextRes = CreateNewResourceType((DeleteType)ContextGone,
+					    "GLXContext");
+    __glXDrawableRes = CreateNewResourceType((DeleteType)DrawableGone,
+					     "GLXDrawable");
+    __glXSwapBarrierRes = CreateNewResourceType((DeleteType)SwapBarrierGone,
+						"GLXSwapBarrier");
+    if (!__glXContextRes || !__glXDrawableRes || !__glXSwapBarrierRes)
+	return;
 
     if (!dixRequestPrivate(glxClientPrivateKey, sizeof (__GLXclientState)))
 	return;
@@ -305,12 +362,18 @@ void GlxExtensionInit(void)
 	pScreen = screenInfo.screens[i];
 
 	for (p = __glXProviderStack; p != NULL; p = p->next) {
-	    if (p->screenProbe(pScreen) != NULL) {
+	    __GLXscreen *glxScreen;
+
+	    glxScreen = p->screenProbe(pScreen);
+	    if (glxScreen != NULL) {
+	        if (glxScreen->GLXminor < glxMinorVersion)
+		    glxMinorVersion = glxScreen->GLXminor;
 		LogMessage(X_INFO,
 			   "GLX: Initialized %s GL provider for screen %d\n",
 			   p->name, i);
 		break;
 	    }
+
 	}
 
 	if (!p)
@@ -341,6 +404,7 @@ void GlxExtensionInit(void)
     }
 
     __glXErrorBase = extEntry->errorBase;
+    __glXEventBase = extEntry->eventBase;
 }
 
 /************************************************************************/
@@ -384,6 +448,9 @@ __GLXcontext *__glXForceCurrent(__GLXclientState *cl, GLXContextTag tag,
     	}
     }
     
+    if (cx->wait && (*cx->wait)(cx, cl, error))
+	return NULL;
+
     if (cx == __glXLastContext) {
 	/* No need to re-bind */
 	return cx;

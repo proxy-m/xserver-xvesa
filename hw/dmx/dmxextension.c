@@ -41,6 +41,8 @@
 #include <dmx-config.h>
 #endif
 
+#include <stdlib.h>
+
 #include "dmx.h"
 #include "dmxinit.h"
 #include "dmxextension.h"
@@ -1121,9 +1123,9 @@ static void dmxBERestoreRenderGlyph(pointer value, XID id, pointer n)
     }
 
     /* Now allocate the memory we need */
-    images = xcalloc(len_images, sizeof(char));
-    gids   = xalloc(glyphSet->hash.tableEntries*sizeof(Glyph));
-    glyphs = xalloc(glyphSet->hash.tableEntries*sizeof(XGlyphInfo));
+    images = calloc(len_images, sizeof(char));
+    gids   = malloc(glyphSet->hash.tableEntries*sizeof(Glyph));
+    glyphs = malloc(glyphSet->hash.tableEntries*sizeof(XGlyphInfo));
 
     pos = images;
     ctr = 0;
@@ -1158,9 +1160,9 @@ static void dmxBERestoreRenderGlyph(pointer value, XID id, pointer n)
 		     len_images);
 
     /* Clean up */
-    xfree(len_images);
-    xfree(gids);
-    xfree(glyphs);    
+    free(len_images);
+    free(gids);
+    free(glyphs);    
 }
 #endif
 
@@ -1514,7 +1516,7 @@ static void dmxBEDestroyScratchGCs(int scrnNum)
 /** Destroy window hierachy on back-end server.  To ensure that all
  *  XDestroyWindow() calls succeed, they must be performed in a bottom
  *  up order so that windows are not destroyed before their children.
- *  XDestroyWindow(), which is called from #dmxBEDestrowWindow(), will
+ *  XDestroyWindow(), which is called from #dmxBEDestroyWindow(), will
  *  destroy a window as well as all of it's children. */
 static void dmxBEDestroyWindowTree(int idx)
 {

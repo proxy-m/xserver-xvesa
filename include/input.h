@@ -52,7 +52,10 @@ SOFTWARE.
 #include "screenint.h"
 #include <X11/Xmd.h>
 #include <X11/Xproto.h>
+#include <stdint.h>
 #include "window.h"     /* for WindowPtr */
+#include "xkbrules.h"
+#include "events.h"
 
 #define DEVICE_INIT	0
 #define DEVICE_ON	1
@@ -62,6 +65,7 @@ SOFTWARE.
 #define POINTER_RELATIVE (1 << 1)
 #define POINTER_ABSOLUTE (1 << 2)
 #define POINTER_ACCELERATE (1 << 3)
+#define POINTER_SCREEN (1 << 4) /* Data in screen coordinates */
 
 /*int constants for pointer acceleration schemes*/
 #define PtrAccelNoOp            0
@@ -69,7 +73,11 @@ SOFTWARE.
 #define PtrAccelLightweight     2
 #define PtrAccelDefault         PtrAccelPredictable
 
-#define MAX_VALUATORS 36 /* XXX from comment in dix/getevents.c */
+#define MAX_VALUATORS 36
+/* Maximum number of valuators, divided by six, rounded up, to get number
+ * of events. */
+#define MAX_VALUATOR_EVENTS 6
+#define MAX_BUTTONS 256 /* completely arbitrarily chosen */
 
 #define NO_AXIS_LIMITS -1
 
@@ -90,51 +98,21 @@ SOFTWARE.
 #define RevertToFollowKeyboard	3
 #endif
 
-/* Used for enter/leave and focus in/out semaphores */
-#define SEMAPHORE_FIELD_SET(win, dev, field) \
-{ \
-    FocusSemaphoresPtr sem; \
-    sem = (FocusSemaphoresPtr)dixLookupPrivate(&win->devPrivates, FocusPrivatesKey); \
-    sem->field[dev->id/8] |= (1 << (dev->id % 8)); \
-}
-
-#define SEMAPHORE_FIELD_UNSET(win, dev, field) \
-{ \
-    FocusSemaphoresPtr sem; \
-    sem = (FocusSemaphoresPtr)dixLookupPrivate(&win->devPrivates, FocusPrivatesKey); \
-    sem->field[dev->id/8] &= ~(1 << (dev->id % 8)); \
-}
-
-#define ENTER_LEAVE_SEMAPHORE_SET(win, dev) \
-        SEMAPHORE_FIELD_SET(win, dev, enterleave);
-
-#define ENTER_LEAVE_SEMAPHORE_UNSET(win, dev) \
-        SEMAPHORE_FIELD_UNSET(win, dev, enterleave);
-
-#define ENTER_LEAVE_SEMAPHORE_ISSET(win, dev) \
-    ((FocusSemaphoresPtr)dixLookupPrivate(&win->devPrivates, FocusPrivatesKey))->enterleave[dev->id/8] & (1 << (dev->id % 8))
-
-#define FOCUS_SEMAPHORE_SET(win, dev) \
-        SEMAPHORE_FIELD_SET(win, dev, focusinout);
-
-#define FOCUS_SEMAPHORE_UNSET(win, dev) \
-        SEMAPHORE_FIELD_UNSET(win, dev, focusinout);
-
-#define FOCUS_SEMAPHORE_ISSET(win, dev) \
-    ((FocusSemaphoresPtr)dixLookupPrivate(&win->devPrivates, FocusPrivatesKey))->focusinout[dev->id/8] & (1 << (dev->id % 8))
-
 typedef unsigned long Leds;
 typedef struct _OtherClients *OtherClientsPtr;
 typedef struct _InputClients *InputClientsPtr;
 typedef struct _DeviceIntRec *DeviceIntPtr;
 typedef struct _ClassesRec *ClassesPtr;
+typedef union _GrabMask GrabMask;
 
 typedef struct _EventList {
     xEvent* event;
     int evlen; /* length of allocated memory for event in bytes.  This is not
                   the actual length of the event. The event's actual length is
                   32 for standard events or 32 +
-                  ((xGenericEvent*)event)->length * 4 for GenericEvents */
+                  ((xGenericEvent*)event)->length * 4 for GenericEvents.
+                  For events in the EQ, the length is
+                  ((InternalEvent*)event)->u.any.length */
 } EventList, *EventListPtr;
 
 /* The DIX stores incoming input events in this list */
@@ -146,9 +124,8 @@ typedef int (*DeviceProc)(
     int /*what*/);
 
 typedef void (*ProcessInputProc)(
-    xEventPtr /*events*/,
-    DeviceIntPtr /*device*/,
-    int /*count*/);
+    InternalEvent * /*event*/,
+    DeviceIntPtr /*device*/);
 
 typedef Bool (*DeviceHandleProc)(
     DeviceIntPtr /*device*/,
@@ -225,8 +202,8 @@ typedef struct {
     unsigned char id;
 } LedCtrl;
 
-extern KeybdCtrl	defaultKeyboardControl;
-extern PtrCtrl		defaultPointerControl;
+extern _X_EXPORT KeybdCtrl	defaultKeyboardControl;
+extern _X_EXPORT PtrCtrl	defaultPointerControl;
 
 typedef struct _InputOption {
     char                *key;
@@ -234,21 +211,49 @@ typedef struct _InputOption {
     struct _InputOption *next;
 } InputOption;
 
-extern void InitCoreDevices(void);
+typedef struct _InputAttributes {
+    char                *product;
+    char                *vendor;
+    char                *device;
+    char                **tags; /* null-terminated */
+    uint32_t            flags;
+} InputAttributes;
 
-extern DeviceIntPtr AddInputDevice(
+#define ATTR_KEYBOARD (1<<0)
+#define ATTR_POINTER (1<<1)
+#define ATTR_JOYSTICK (1<<2)
+#define ATTR_TABLET (1<<3)
+#define ATTR_TOUCHPAD (1<<4)
+#define ATTR_TOUCHSCREEN (1<<5)
+
+/* Key has been run through all input processing and events sent to clients. */
+#define KEY_PROCESSED 1
+/* Key has not been fully processed, no events have been sent. */
+#define KEY_POSTED 2
+
+extern void set_key_down(DeviceIntPtr pDev, int key_code, int type);
+extern void set_key_up(DeviceIntPtr pDev, int key_code, int type);
+extern int key_is_down(DeviceIntPtr pDev, int key_code, int type);
+
+extern void InitCoreDevices(void);
+extern void InitXTestDevices(void);
+
+extern _X_EXPORT DeviceIntPtr AddInputDevice(
     ClientPtr /*client*/,
     DeviceProc /*deviceProc*/,
     Bool /*autoStart*/);
 
-extern Bool EnableDevice(
-    DeviceIntPtr /*device*/);
+extern _X_EXPORT Bool EnableDevice(
+    DeviceIntPtr /*device*/,
+    BOOL /* sendevent */);
 
-extern Bool ActivateDevice(
-    DeviceIntPtr /*device*/);
+extern _X_EXPORT Bool ActivateDevice(
+    DeviceIntPtr /*device*/,
+    BOOL /* sendevent */);
 
-extern Bool DisableDevice(
-    DeviceIntPtr /*device*/);
+extern _X_EXPORT Bool DisableDevice(
+    DeviceIntPtr /*device*/,
+    BOOL /* sendevent */);
 
 extern int InitAndStartDevices(void);
 
@@ -256,10 +261,11 @@ extern void CloseDownDevices(void);
 
 extern void UndisplayDevices(void);
 
-extern int RemoveDevice(
-    DeviceIntPtr /*dev*/);
+extern _X_EXPORT int RemoveDevice(
+    DeviceIntPtr /*dev*/,
+    BOOL /* sendevent */);
 
-extern int NumMotionEvents(void);
+extern _X_EXPORT int NumMotionEvents(void);
 
 extern void RegisterPointerDevice(
     DeviceIntPtr /*device*/);
@@ -267,44 +273,41 @@ extern void RegisterPointerDevice(
 extern void RegisterKeyboardDevice(
     DeviceIntPtr /*device*/);
 
-extern int dixLookupDevice(
+extern _X_EXPORT int dixLookupDevice(
     DeviceIntPtr *         /* dev */,
     int                    /* id */,
     ClientPtr              /* client */,
     Mask                   /* access_mode */);
 
-extern void QueryMinMaxKeyCodes(
+extern _X_EXPORT void QueryMinMaxKeyCodes(
     KeyCode* /*minCode*/,
     KeyCode* /*maxCode*/);
 
-extern Bool SetKeySymsMap(
+extern _X_EXPORT Bool SetKeySymsMap(
     KeySymsPtr /*dst*/,
     KeySymsPtr /*src*/);
 
-extern Bool InitKeyClassDeviceStruct(
-    DeviceIntPtr /*device*/,
-    KeySymsPtr /*pKeySyms*/,
-    CARD8 /*pModifiers*/[]);
-
-extern Bool InitButtonClassDeviceStruct(
+extern _X_EXPORT Bool InitButtonClassDeviceStruct(
     DeviceIntPtr /*device*/,
     int /*numButtons*/,
+    Atom* /* labels */,
     CARD8* /*map*/);
 
-extern Bool InitValuatorClassDeviceStruct(
+extern _X_EXPORT Bool InitValuatorClassDeviceStruct(
     DeviceIntPtr /*device*/,
     int /*numAxes*/,
+    Atom* /* labels */,
     int /*numMotionEvents*/,
     int /*mode*/);
 
-extern Bool InitPointerAccelerationScheme(
+extern _X_EXPORT Bool InitPointerAccelerationScheme(
     DeviceIntPtr /*dev*/,
     int /*scheme*/);
 
-extern Bool InitAbsoluteClassDeviceStruct(
+extern _X_EXPORT Bool InitAbsoluteClassDeviceStruct(
     DeviceIntPtr /*device*/);
 
-extern Bool InitFocusClassDeviceStruct(
+extern _X_EXPORT Bool InitFocusClassDeviceStruct(
     DeviceIntPtr /*device*/);
 
 typedef void (*BellProcPtr)(
@@ -317,16 +320,11 @@ typedef void (*KbdCtrlProcPtr)(
     DeviceIntPtr /*device*/,
     KeybdCtrl * /*ctrl*/);
 
-extern Bool InitKbdFeedbackClassDeviceStruct(
-    DeviceIntPtr /*device*/,
-    BellProcPtr /*bellProc*/,
-    KbdCtrlProcPtr /*controlProc*/);
-
 typedef void (*PtrCtrlProcPtr)(
     DeviceIntPtr /*device*/,
     PtrCtrl * /*ctrl*/);
 
-extern Bool InitPtrFeedbackClassDeviceStruct(
+extern _X_EXPORT Bool InitPtrFeedbackClassDeviceStruct(
     DeviceIntPtr /*device*/,
     PtrCtrlProcPtr /*controlProc*/);
 
@@ -334,7 +332,7 @@ typedef void (*StringCtrlProcPtr)(
     DeviceIntPtr /*device*/,
     StringCtrl * /*ctrl*/);
 
-extern Bool InitStringFeedbackClassDeviceStruct(
+extern _X_EXPORT Bool InitStringFeedbackClassDeviceStruct(
     DeviceIntPtr /*device*/,
     StringCtrlProcPtr /*controlProc*/,
     int /*max_symbols*/,
@@ -345,7 +343,7 @@ typedef void (*BellCtrlProcPtr)(
     DeviceIntPtr /*device*/,
     BellCtrl * /*ctrl*/);
 
-extern Bool InitBellFeedbackClassDeviceStruct(
+extern _X_EXPORT Bool InitBellFeedbackClassDeviceStruct(
     DeviceIntPtr /*device*/,
     BellProcPtr /*bellProc*/,
     BellCtrlProcPtr /*controlProc*/);
@@ -354,7 +352,7 @@ typedef void (*LedCtrlProcPtr)(
     DeviceIntPtr /*device*/,
     LedCtrl * /*ctrl*/);
 
-extern Bool InitLedFeedbackClassDeviceStruct(
+extern _X_EXPORT Bool InitLedFeedbackClassDeviceStruct(
     DeviceIntPtr /*device*/,
     LedCtrlProcPtr /*controlProc*/);
 
@@ -363,30 +361,30 @@ typedef void (*IntegerCtrlProcPtr)(
     IntegerCtrl * /*ctrl*/);
 
 
-extern Bool InitIntegerFeedbackClassDeviceStruct(
+extern _X_EXPORT Bool InitIntegerFeedbackClassDeviceStruct(
     DeviceIntPtr /*device*/,
     IntegerCtrlProcPtr /*controlProc*/);
 
-extern Bool InitPointerDeviceStruct(
+extern _X_EXPORT Bool InitPointerDeviceStruct(
     DevicePtr /*device*/,
     CARD8* /*map*/,
     int /*numButtons*/,
+    Atom* /* btn_labels */,
     PtrCtrlProcPtr /*controlProc*/,
     int /*numMotionEvents*/,
-    int /*numAxes*/);
+    int /*numAxes*/,
+    Atom* /* axes_labels */);
 
-extern Bool InitKeyboardDeviceStruct(
-    DevicePtr /*device*/,
-    KeySymsPtr /*pKeySyms*/,
-    CARD8 /*pModifiers*/[],
+extern _X_EXPORT Bool InitKeyboardDeviceStruct(
+    DeviceIntPtr /*device*/,
+    XkbRMLVOSet * /*rmlvo*/,
     BellProcPtr /*bellProc*/,
     KbdCtrlProcPtr /*controlProc*/);
 
-extern void SendMappingNotify(
+extern int ApplyPointerMapping(
     DeviceIntPtr /* pDev */,
-    unsigned int /*request*/,
-    unsigned int /*firstKeyCode*/,
-    unsigned int /*count*/,
+    CARD8 *      /* map */,
+    int          /* len */,
     ClientPtr	/* client */);
 
 extern Bool BadDeviceMap(
@@ -395,13 +393,6 @@ extern Bool BadDeviceMap(
     unsigned /*low*/,
     unsigned /*high*/,
     XID* /*errval*/);
-
-extern Bool AllModifierKeysAreUp(
-    DeviceIntPtr /*device*/,
-    CARD8* /*map1*/,
-    int /*per1*/,
-    CARD8* /*map2*/,
-    int /*per2*/);
 
 extern void NoteLedState(
     DeviceIntPtr /*keybd*/,
@@ -413,49 +404,33 @@ extern void MaybeStopHint(
     ClientPtr /*client*/);
 
 extern void ProcessPointerEvent(
-    xEventPtr /*xE*/,
-    DeviceIntPtr /*mouse*/,
-    int /*count*/);
+    InternalEvent* /* ev */,
+    DeviceIntPtr /*mouse*/);
 
 extern void ProcessKeyboardEvent(
-    xEventPtr /*xE*/,
-    DeviceIntPtr /*keybd*/,
-    int /*count*/);
-
-#ifdef XKB
-extern void CoreProcessPointerEvent(
-    xEventPtr /*xE*/,
-    DeviceIntPtr /*mouse*/,
-    int /*count*/) _X_DEPRECATED;
-
-extern _X_DEPRECATED void CoreProcessKeyboardEvent(
-    xEventPtr /*xE*/,
-    DeviceIntPtr /*keybd*/,
-    int /*count*/) _X_DEPRECATED;
-#endif
+    InternalEvent* /*ev*/,
+    DeviceIntPtr   /*keybd*/);
 
 extern Bool LegalModifier(
     unsigned int /*key*/, 
     DeviceIntPtr /*pDev*/);
 
-extern void ProcessInputEvents(void);
+extern _X_EXPORT void ProcessInputEvents(void);
 
-extern void InitInput(
+extern _X_EXPORT void InitInput(
     int  /*argc*/,
     char ** /*argv*/);
 
-extern int GetMaximumEventsNum(void);
+extern _X_EXPORT int GetMaximumEventsNum(void);
 
-extern int GetEventList(EventListPtr* list);
-extern EventListPtr InitEventList(int num_events);
-extern void SetMinimumEventSize(EventListPtr list,
-                                int num_events,
-                                int min_size);
-extern void FreeEventList(EventListPtr list, int num_events);
+extern _X_EXPORT int GetEventList(EventListPtr* list);
+extern _X_EXPORT EventListPtr InitEventList(int num_events);
+extern _X_EXPORT void FreeEventList(EventListPtr list, int num_events);
 
-extern void CreateClassesChangedEvent(EventListPtr event, 
+extern void CreateClassesChangedEvent(EventListPtr event,
                                       DeviceIntPtr master,
-                                      DeviceIntPtr slave);
+                                      DeviceIntPtr slave,
+                                      int type);
 extern int GetPointerEvents(
     EventListPtr events,
     DeviceIntPtr pDev,
@@ -496,13 +471,13 @@ extern void PostSyntheticMotion(
     int screen,
     unsigned long time);
 
-extern int GetMotionHistorySize(
+extern _X_EXPORT int GetMotionHistorySize(
     void);
 
-extern void AllocateMotionHistory(
+extern _X_EXPORT void AllocateMotionHistory(
     DeviceIntPtr pDev);
 
-extern int GetMotionHistory(
+extern _X_EXPORT int GetMotionHistory(
     DeviceIntPtr pDev,
     xTimecoord **buff,
     unsigned long start,
@@ -514,28 +489,59 @@ extern int AttachDevice(ClientPtr client,
                         DeviceIntPtr slave,
                         DeviceIntPtr master);
 
-extern DeviceIntPtr GetPairedDevice(DeviceIntPtr kbd);
+extern _X_EXPORT DeviceIntPtr GetPairedDevice(DeviceIntPtr kbd);
+extern DeviceIntPtr GetMaster(DeviceIntPtr dev, int type);
 
-extern int AllocMasterDevice(ClientPtr client,
+extern int AllocDevicePair(ClientPtr client,
                              char* name,
                              DeviceIntPtr* ptr,
-                             DeviceIntPtr* keybd);
+                             DeviceIntPtr* keybd,
+                             DeviceProc ptr_proc,
+                             DeviceProc keybd_proc,
+                             Bool master);
 extern void DeepCopyDeviceClasses(DeviceIntPtr from,
-                                  DeviceIntPtr to);
+                                  DeviceIntPtr to,
+                                  DeviceChangedEvent *dce);
 
-extern int EnterLeaveSemaphoresIsset(WindowPtr win);
-extern int FocusSemaphoresIsset(WindowPtr win);
+/* Helper functions. */
+extern int generate_modkeymap(ClientPtr client, DeviceIntPtr dev,
+                              KeyCode **modkeymap, int *max_keys_per_mod);
+extern int change_modmap(ClientPtr client, DeviceIntPtr dev, KeyCode *map,
+                         int max_keys_per_mod);
+extern int AllocXTestDevice(ClientPtr client,
+                             char* name,
+                             DeviceIntPtr* ptr,
+                             DeviceIntPtr* keybd,
+                             DeviceIntPtr master_ptr,
+                             DeviceIntPtr master_keybd);
+extern BOOL IsXTestDevice(DeviceIntPtr dev, DeviceIntPtr master);
+extern DeviceIntPtr GetXTestDevice(DeviceIntPtr master);
+extern void SendDevicePresenceEvent(int deviceid, int type);
+
+/* misc event helpers */
+extern Mask GetEventFilter(DeviceIntPtr dev, xEvent *event);
+extern Mask GetWindowXI2Mask(DeviceIntPtr dev, WindowPtr win, xEvent* ev);
+void FixUpEventFromWindow(DeviceIntPtr pDev,
+                          xEvent *xE,
+                          WindowPtr pWin,
+                          Window child,
+                          Bool calcChild);
 
 /* Implemented by the DDX. */
-extern int NewInputDeviceRequest(
+extern _X_EXPORT int NewInputDeviceRequest(
     InputOption *options,
+    InputAttributes *attrs,
     DeviceIntPtr *dev);
-extern void DeleteInputDeviceRequest(
+extern  _X_EXPORT void DeleteInputDeviceRequest(
     DeviceIntPtr dev);
 
-extern void DDXRingBell(
+extern _X_EXPORT void DDXRingBell(
     int volume,
     int pitch,
     int duration);
+
+/* Set to TRUE by default - os/utils.c sets it to FALSE on user request,
+   xfixes/cursor.c uses it to determine if the cursor is enabled */
+extern Bool EnableCursor;
 
 #endif /* INPUT_H */

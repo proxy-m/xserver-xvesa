@@ -28,12 +28,11 @@
    prior written authorization. */
 
 #include "sanitizedCarbon.h"
+#include <AvailabilityMacros.h>
 
 #ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
 #endif
-
-#define DEFAULT_PATH "/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/X11/bin"
 
 #include "quartzCommon.h"
 
@@ -44,8 +43,7 @@
 #include "darwin.h"
 #include "darwinEvents.h"
 #include "quartz.h"
-#define _APPLEWM_SERVER_
-#include "X11/extensions/applewm.h"
+#include <X11/extensions/applewmconst.h>
 #include "applewmExt.h"
 
 #include <stdio.h>
@@ -102,7 +100,14 @@
      selector: @selector(apps_table_done:)
      name: NSWindowWillCloseNotification
      object: [apps_table window]];
+
+    // Setup data about our Windows menu
+    if(window_separator) {
+        [[window_separator menu] removeItem:window_separator];
+        window_separator = nil;
+    }
     
+    windows_menu_start = [[X11App windowsMenu] numberOfItems];
 }
 
 - (void) item_selected:sender
@@ -116,17 +121,15 @@
 - (void) remove_window_menu
 {
   NSMenu *menu;
-  int first, count, i;
-	
+  int count, i;
+
   /* Work backwards so we don't mess up the indices */
-  menu = [window_separator menu];
-  first = [menu indexOfItem:window_separator] + 1;
+  menu = [X11App windowsMenu];
   count = [menu numberOfItems];
-  for (i = count - 1; i >= first; i--)
+  for (i = count - 1; i >= windows_menu_start; i--)
     [menu removeItemAtIndex:i];
 	
-  menu = [dock_window_separator menu];
-  count = [menu indexOfItem:dock_window_separator];
+  count = [dock_menu indexOfItem:dock_window_separator];
   for (i = 0; i < count; i++)
     [dock_menu removeItemAtIndex:0];
 }
@@ -137,9 +140,15 @@
   NSMenuItem *item;
   int first, count, i;
 
-  menu = [window_separator menu];
-  first = [menu indexOfItem:window_separator] + 1;
+  menu = [X11App windowsMenu];
+  first = windows_menu_start + 1;
   count = [list count];
+  
+  // Push a Separator
+  if(count) {
+      [menu addItem:[NSMenuItem separatorItem]];
+  }
+
   for (i = 0; i < count; i++)
     {
       NSString *name, *shortcut;
@@ -152,7 +161,6 @@
 
       item = (NSMenuItem *) [menu addItemWithTitle:name action:@selector
 				  (item_selected:) keyEquivalent:shortcut];
-
       [item setKeyEquivalentModifierMask:(NSUInteger) windowItemModMask];
       [item setTarget:self];
       [item setTag:i];
@@ -162,7 +170,6 @@
 				       action:@selector
 				       (item_selected:) keyEquivalent:shortcut
 				       atIndex:i];
-
       [item setKeyEquivalentModifierMask:(NSUInteger) windowItemModMask];
       [item setTarget:self];
       [item setTag:i];
@@ -278,8 +285,8 @@
   int first, count;
   int n = [nn intValue];
 
-  menu = [window_separator menu];
-  first = [menu indexOfItem:window_separator] + 1;
+  menu = [X11App windowsMenu];
+  first = windows_menu_start + 1;
   count = [menu numberOfItems] - first;
 	
   if (checked_window_item >= 0 && checked_window_item < count)
@@ -305,78 +312,86 @@
   [self install_apps_menu:list];
 }
 
+#ifdef XQUARTZ_SPARKLE
+- (void) setup_sparkle {
+    if(check_for_updates_item)
+        return; // already did it...
+
+    NSMenu *menu = [x11_about_item menu];
+
+    check_for_updates_item = [menu insertItemWithTitle:NSLocalizedString(@"Check for X11 Updates...", @"Check for X11 Updates...")
+                                               action:@selector (checkForUpdates:)
+                                        keyEquivalent:@""
+                                              atIndex:1];
+    [check_for_updates_item setTarget:[SUUpdater sharedUpdater]];
+    [check_for_updates_item setEnabled:YES];
+
+    // Set X11Controller as the delegate for the updater.
+    [[SUUpdater sharedUpdater] setDelegate:self];
+}
+
+// Sent immediately before installing the specified update.
+- (void)updater:(SUUpdater *)updater willInstallUpdate:(SUAppcastItem *)update {
+    //[self set_can_quit:YES];
+}
+
+#endif
+
 - (void) launch_client:(NSString *)filename
 {
-  const char *command = [filename UTF8String];
-  const char *argv[7];
-  int child1, child2 = 0;
-  int status;
-	
-  argv[0] = "/usr/bin/login";
-  argv[1] = "-fp";
-  argv[2] = getlogin();
-  argv[3] = [X11App prefs_get_string:@PREFS_LOGIN_SHELL default:"/bin/sh"];
-  argv[4] = "-c";
-  argv[5] = command;
-  argv[6] = NULL;
-
-  /* Do the fork-twice trick to avoid having to reap zombies */
+    int child1, child2 = 0;
+    int status;
+    const char *newargv[4];
+    char buf[128];
+    char *s;
     
-  child1 = fork();
+    newargv[0] = [X11App prefs_get_string:@PREFS_LOGIN_SHELL default:"/bin/sh"];
+    newargv[1] = "-c";
+    newargv[2] = [filename UTF8String];
+    newargv[3] = NULL;
     
-  switch (child1) {
-  case -1:                                /* error */
-    break;
-      
-  case 0:                                 /* child1 */
-    child2 = fork();
-      
-    switch (child2) {
-      int max_files, i;
-      char buf[1024], *temp;
-	
-    case -1:                            /* error */
-      _exit(1);
-	
-    case 0:                             /* child2 */
-      /* close all open files except for standard streams */
-      max_files = sysconf(_SC_OPEN_MAX);
-      for (i = 3; i < max_files; i++)	close(i);
-	
-      /* ensure stdin is on /dev/null */
-      close(0);
-      open("/dev/null", O_RDONLY);
-	
-      /* Setup environment */
-      temp = getenv("DISPLAY");
-      if (temp == NULL || temp[0] == 0) {
-    snprintf(buf, sizeof(buf), ":%s", display);
-	setenv("DISPLAY", buf, TRUE);
-      }
-	
-      temp = getenv("PATH");
-      if (temp == NULL || temp[0] == 0) 
-	setenv ("PATH", DEFAULT_PATH, TRUE);
-      else if (strnstr(temp, "/usr/X11/bin", sizeof(temp)) == NULL) {
-	snprintf(buf, sizeof(buf), "%s:/usr/X11/bin", temp);            
-	setenv("PATH", buf, TRUE);      
-      }
-      /* cd $HOME */
-      temp = getenv("HOME");
-      if (temp != NULL && temp[0]!=0) chdir(temp);
-	
-      execvp(argv[0], (char **const) argv);
-	
-      _exit(2);
-	
-    default:                            /* parent (child1) */
-      _exit(0);
+    s = getenv("DISPLAY");
+    if (s == NULL || s[0] == 0) {
+        snprintf(buf, sizeof(buf), ":%s", display);
+        setenv("DISPLAY", buf, TRUE);
     }
-    break;
+
+    /* Do the fork-twice trick to avoid having to reap zombies */
+    child1 = fork();
+    switch (child1) {
+        case -1:                                /* error */
+            break;
       
-  default:                                /* parent */
-    waitpid(child1, &status, 0);
-  }
+        case 0:                                 /* child1 */
+            child2 = fork();
+      
+            switch (child2) {
+                int max_files, i;
+	
+                case -1:                            /* error */
+                    _exit(1);
+	 
+                case 0:                             /* child2 */
+                /* close all open files except for standard streams */
+                max_files = sysconf(_SC_OPEN_MAX);
+                for(i = 3; i < max_files; i++)
+                    close(i);
+	
+                /* ensure stdin is on /dev/null */
+                close(0);
+                open("/dev/null", O_RDONLY);
+	
+                execvp(newargv[0], (char **const) newargv);
+                _exit(2);
+	
+                default:                            /* parent (child1) */
+                _exit(0);
+            }
+            break;
+      
+        default:                                /* parent */
+            waitpid(child1, &status, 0);
+    }
 }
 
 - (void) app_selected:sender
@@ -411,8 +426,8 @@
   [[columns objectAtIndex:2] setIdentifier:@"2"];
 	
   [apps_table setDataSource:self];
-  [apps_table selectRow:0 byExtendingSelection:NO];
-	
+  [apps_table selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+
   [[apps_table window] makeKeyAndOrderFront:sender];
   [apps_table reloadData];
   if(oldapps != nil)
@@ -459,7 +474,7 @@
   [item release];
 	
   [apps_table reloadData];
-  [apps_table selectRow:row byExtendingSelection:NO];
+  [apps_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
 }
 
 - (IBAction) apps_table_duplicate:sender
@@ -482,7 +497,7 @@
   [item release];
 	
   [apps_table reloadData];
-  [apps_table selectRow:row+1 byExtendingSelection:NO];
+  [apps_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row+1] byExtendingSelection:NO];
 }
 
 - (IBAction) apps_table_delete:sender
@@ -504,10 +519,10 @@
 	
   row = MIN (row, [table_apps count] - 1);
   if (row >= 0)
-    [apps_table selectRow:row byExtendingSelection:NO];
+    [apps_table selectRowIndexes:[NSIndexSet indexSetWithIndex:row] byExtendingSelection:NO];
 }
 
-- (int) numberOfRowsInTableView:(NSTableView *)tableView
+- (NSInteger) numberOfRowsInTableView:(NSTableView *)tableView
 {
   if (table_apps == nil) return 0;
   
@@ -515,7 +530,7 @@
 }
 
 - (id) tableView:(NSTableView *)tableView
-objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
+objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
   NSArray *item;
   int col;
@@ -532,7 +547,7 @@ objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
 }
 
 - (void) tableView:(NSTableView *)tableView setObjectValue:(id)object
-    forTableColumn:(NSTableColumn *)tableColumn row:(int)row
+    forTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row
 {
   NSMutableArray *item;
   int col;
@@ -615,6 +630,8 @@ objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
 
 - (IBAction)prefs_changed:sender
 {
+    BOOL pbproxy_active;
+
     darwinFakeButtons = [fake_buttons intValue];
     quartzUseSysBeep = [use_sysbeep intValue];
     X11EnableKeyEquivalents = [enable_keyequivs intValue];
@@ -636,7 +653,7 @@ objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
     [NSApp prefs_set_boolean:@PREFS_NO_TCP value:![enable_tcp intValue]];
     [NSApp prefs_set_integer:@PREFS_DEPTH value:[depth selectedTag]];
 
-    BOOL pbproxy_active = [sync_pasteboard intValue];
+    pbproxy_active = [sync_pasteboard intValue];
 
     [NSApp prefs_set_boolean:@PREFS_SYNC_PB value:pbproxy_active];
     [NSApp prefs_set_boolean:@PREFS_SYNC_PB_TO_CLIPBOARD value:[sync_pasteboard_to_clipboard intValue]];
@@ -697,25 +714,24 @@ objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
     [prefs_panel makeKeyAndOrderFront:sender];
 }
 
-- (IBAction) quit:sender
-{
-  DarwinSendDDXEvent(kXquartzQuit, 0);
+- (IBAction) quit:sender {
+    DarwinSendDDXEvent(kXquartzQuit, 0);
 }
 
-- (IBAction) x11_help:sender
-{
-  AHLookupAnchor ((CFStringRef)NSLocalizedString(@"Mac Help", no comment), CFSTR ("mchlp2276"));
+- (IBAction) x11_help:sender {
+#if MAC_OS_X_VERSION_MIN_REQUIRED < 1060
+    AHLookupAnchor((CFStringRef)NSLocalizedString(@"Mac Help", no comment), CFSTR("mchlp2276"));
+#else
+    AHLookupAnchor(CFSTR("com.apple.machelp"), CFSTR("mchlp2276"));
+#endif
 }
 
-- (OSX_BOOL) validateMenuItem:(NSMenuItem *)item
-{
+- (OSX_BOOL) validateMenuItem:(NSMenuItem *)item {
   NSMenu *menu = [item menu];
     
   if (item == toggle_fullscreen_item)
     return !quartzEnableRootless;
-  else   if (item == copy_menu_item) // For some reason, this isn't working...
-      return NO;
-  else if (menu == [window_separator menu] || menu == dock_menu
+  else if (menu == [X11App windowsMenu] || menu == dock_menu
 	   || (menu == [x11_about_item menu] && [item tag] == 42))
     return (AppleWMSelectedEvents () & AppleWMControllerNotifyMask) != 0;
   else
@@ -756,13 +772,16 @@ objectValueForTableColumn:(NSTableColumn *)tableColumn row:(int)row
 
 - (void) applicationWillTerminate:(NSNotification *)aNotification
 {
+  unsigned remain;
   [X11App prefs_synchronize];
 	
   /* shutdown the X server, it will exit () for us. */
   DarwinSendDDXEvent(kXquartzQuit, 0);
 	
   /* In case it doesn't, exit anyway after a while. */
-  while (sleep (10) != 0) ;
+  remain = 10000000;
+  while((remain = usleep(remain)) > 0);
+
   exit (1);
 }
 

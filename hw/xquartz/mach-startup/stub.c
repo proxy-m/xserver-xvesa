@@ -40,8 +40,10 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
-#define kX11AppBundleId "org.x.X11"
+#define kX11AppBundleId LAUNCHD_ID_PREFIX".X11"
 #define kX11AppBundlePath "/Contents/MacOS/X11"
+
+static char *server_bootstrap_name = kX11AppBundleId;
 
 #include <mach/mach.h>
 #include <mach/mach_error.h>
@@ -49,6 +51,8 @@
 #include "mach_startup.h"
 
 #include <signal.h>
+
+#include <AvailabilityMacros.h>
 
 #include "launchd_fd.h"
 
@@ -65,11 +69,12 @@ static char x11_path[PATH_MAX + 1];
 
 static pid_t x11app_pid = 0;
 
-static void set_x11_path() {
+static void set_x11_path(void) {
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+
     CFURLRef appURL = NULL;
     CFBundleRef bundle = NULL;
     OSStatus osstatus = LSFindApplicationForInfo(kLSUnknownCreator, CFSTR(kX11AppBundleId), nil, nil, &appURL);
-    UInt32 ver;
 
     switch (osstatus) {
         case noErr:
@@ -90,20 +95,6 @@ static void set_x11_path() {
                 exit(3);
             }
 
-            ver = CFBundleGetVersionNumber(bundle);
-            if(ver < 0x02308000) {
-                CFStringRef versionStr = CFBundleGetValueForInfoDictionaryKey(bundle, kCFBundleVersionKey);
-                const char * versionCStr = "Unknown";
-
-                if(versionStr) 
-                    versionCStr = CFStringGetCStringPtr(versionStr, kCFStringEncodingMacRoman);
-
-                fprintf(stderr, "Xquartz: Could not find a new enough X11.app LSFindApplicationForInfo() returned\n");
-                fprintf(stderr, "         X11.app = %s\n", x11_path);
-                fprintf(stderr, "         Version = %s (%x), Expected Version > 2.3.0\n", versionCStr, (unsigned)ver);
-                exit(9);
-            }
-
             strlcat(x11_path, kX11AppBundlePath, sizeof(x11_path));
 #ifdef DEBUG
             fprintf(stderr, "Xquartz: X11.app = %s\n", x11_path);
@@ -117,6 +108,10 @@ static void set_x11_path() {
                     kX11AppBundleId, (int)osstatus);
             exit(11);
     }
+#else
+    /* TODO: Make Tiger smarter... but TBH, this should never get called on Tiger... */
+    strlcpy(x11_path, "/Applications/Utilities/X11.app/Contents/MacOS/X11", sizeof(x11_path));
+#endif
 }
 
 static int connect_to_socket(const char *filename) {
@@ -152,15 +147,17 @@ static void send_fd_handoff(int connected_fd, int launchd_fd) {
     char databuf[] = "display";
     struct iovec iov[1];
     
-    iov[0].iov_base = databuf;
-    iov[0].iov_len  = sizeof(databuf);
-
     union {
         struct cmsghdr hdr;
         char bytes[CMSG_SPACE(sizeof(int))];
     } buf;
     
     struct msghdr msg;
+    struct cmsghdr *cmsg;
+
+    iov[0].iov_base = databuf;
+    iov[0].iov_len  = sizeof(databuf);
+
     msg.msg_iov = iov;
     msg.msg_iovlen = 1;
     msg.msg_control = buf.bytes;
@@ -169,7 +166,7 @@ static void send_fd_handoff(int connected_fd, int launchd_fd) {
     msg.msg_namelen = 0;
     msg.msg_flags = 0;
 
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR (&msg);
+    cmsg = CMSG_FIRSTHDR (&msg);
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     cmsg->cmsg_len = CMSG_LEN(sizeof(int));
@@ -178,17 +175,15 @@ static void send_fd_handoff(int connected_fd, int launchd_fd) {
     
     *((int*)CMSG_DATA(cmsg)) = launchd_fd;
     
-#ifdef DEBUG
-    fprintf(stderr, "Xquartz: Handoff connection established.  Sending message.\n");
-#endif
     if(sendmsg(connected_fd, &msg, 0) < 0) {
-        fprintf(stderr, "Xquartz: Error sending $DISPLAY file descriptor: %s\n", strerror(errno));
+        fprintf(stderr, "Xquartz: Error sending $DISPLAY file descriptor over fd %d: %d -- %s\n", connected_fd, errno, strerror(errno));
         return;
     }
 
 #ifdef DEBUG
-    fprintf(stderr, "Xquartz: Message sent.  Closing.\n");
+    fprintf(stderr, "Xquartz: Message sent.  Closing handoff fd.\n");
 #endif
+
     close(connected_fd);
 }
 
@@ -210,12 +205,15 @@ int main(int argc, char **argv, char **envp) {
     sig_t handler;
 
     if(argc == 2 && !strcmp(argv[1], "-version")) {
-        fprintf(stderr, "X.org Release 7.3\n");
+        fprintf(stderr, "X.org Release 7.5\n");
         fprintf(stderr, "X.Org X Server %s\n", XSERVER_VERSION);
         fprintf(stderr, "Build Date: %s\n", BUILD_DATE);
         return EXIT_SUCCESS;
     }
 
+    if(getenv("X11_PREFS_DOMAIN"))
+        server_bootstrap_name = getenv("X11_PREFS_DOMAIN");
+    
     /* We don't have a mechanism in place to handle this interrupt driven
      * server-start notification, so just send the signal now, so xinit doesn't
      * time out waiting for it and will just poll for the server.
@@ -232,12 +230,15 @@ int main(int argc, char **argv, char **envp) {
     /* Get the $DISPLAY FD */
     launchd_fd = launchd_display_fd();
 
-    kr = bootstrap_look_up(bootstrap_port, SERVER_BOOTSTRAP_NAME, &mp);
+    kr = bootstrap_look_up(bootstrap_port, server_bootstrap_name, &mp);
     if(kr != KERN_SUCCESS) {
+        pid_t child;
+
+        fprintf(stderr, "Xquartz: Unable to locate waiting server: %s\n", server_bootstrap_name);
         set_x11_path();
 
         /* This forking is ugly and will be cleaned up later */
-        pid_t child = fork();
+        child = fork();
         if(child == -1) {
             fprintf(stderr, "Xquartz: Could not fork: %s\n", strerror(errno));
             return EXIT_FAILURE;
@@ -255,13 +256,17 @@ int main(int argc, char **argv, char **envp) {
         /* Try connecting for 10 seconds */
         for(i=0; i < 80; i++) {
             usleep(250000);
-            kr = bootstrap_look_up(bootstrap_port, SERVER_BOOTSTRAP_NAME, &mp);
+            kr = bootstrap_look_up(bootstrap_port, server_bootstrap_name, &mp);
             if(kr == KERN_SUCCESS)
                 break;
         }
 
         if(kr != KERN_SUCCESS) {
-            fprintf(stderr, "Xquartz: bootstrap_look_up(): Timed out: %s\n", bootstrap_strerror(kr));
+#if MAC_OS_X_VERSION_MIN_REQUIRED >= 1050
+            fprintf(stderr, "Xquartz: bootstrap_look_up(): %s\n", bootstrap_strerror(kr));
+#else
+            fprintf(stderr, "Xquartz: bootstrap_look_up(): %ul\n", (unsigned long)kr);
+#endif
             return EXIT_FAILURE;
         }
     }
@@ -279,12 +284,16 @@ int main(int argc, char **argv, char **envp) {
                 fprintf(stderr, "Xquartz: Failed to request a socket from the server to send the $DISPLAY fd over (try %d of %d)\n", (int)try+1, (int)try_max);
                 continue;
             }
-            
+
             handoff_fd = connect_to_socket(handoff_socket_filename);
             if(handoff_fd == -1) {
                 fprintf(stderr, "Xquartz: Failed to connect to socket (try %d of %d)\n", (int)try+1, (int)try_max);
                 continue;
             }
+
+#ifdef DEBUG
+            fprintf(stderr, "Xquartz: Handoff connection established (try %d of %d) on fd %d, \"%s\".  Sending message.\n", (int)try+1, (int)try_max, handoff_fd, handoff_socket_filename);
+#endif
 
             send_fd_handoff(handoff_fd, launchd_fd);            
             close(handoff_fd);
@@ -298,12 +307,12 @@ int main(int argc, char **argv, char **envp) {
     /* We have fixed-size string lengths due to limitations in IPC,
      * so we need to copy our argv and envp.
      */
-    newargv = (string_array_t)alloca(argc * sizeof(string_t));
-    newenvp = (string_array_t)alloca(envpc * sizeof(string_t));
-    
+    newargv = (string_array_t)malloc(argc * sizeof(string_t));
+    newenvp = (string_array_t)malloc(envpc * sizeof(string_t));
+
     if(!newargv || !newenvp) {
         fprintf(stderr, "Xquartz: Memory allocation failure\n");
-        exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
     
     for(i=0; i < argc; i++) {
@@ -314,6 +323,10 @@ int main(int argc, char **argv, char **envp) {
     }
 
     kr = start_x11_server(mp, newargv, argc, newenvp, envpc);
+
+    free(newargv);
+    free(newenvp);
+
     if (kr != KERN_SUCCESS) {
         fprintf(stderr, "Xquartz: start_x11_server: %s\n", mach_error_string(kr));
         return EXIT_FAILURE;

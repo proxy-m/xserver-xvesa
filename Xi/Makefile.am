@@ -5,12 +5,8 @@ AM_CFLAGS = $(DIX_CFLAGS)
 libXi_la_SOURCES =	\
 	allowev.c \
 	allowev.h \
-        chdevcur.c \
-        chdevcur.h \
 	chgdctl.c \
 	chgdctl.h \
-        chdevhier.c \
-        chdevhier.h \
 	chgfctl.c \
 	chgfctl.h \
 	chgkbd.c \
@@ -27,13 +23,9 @@ libXi_la_SOURCES =	\
 	devbell.h \
 	exevents.c \
 	exglobals.h \
-        extgrbdev.c \
-        extgrbdev.h \
 	extinit.c \
 	getbmap.c \
 	getbmap.h \
-	getcptr.c \
-	getcptr.h \
 	getdctl.c \
 	getdctl.h \
 	getfctl.c \
@@ -62,8 +54,6 @@ libXi_la_SOURCES =	\
 	listdev.h \
 	opendev.c \
 	opendev.h \
-	querydp.c \
-	querydp.h \
 	queryst.c \
 	queryst.h \
 	selectev.c \
@@ -72,8 +62,6 @@ libXi_la_SOURCES =	\
 	sendexev.h \
 	setbmap.c \
 	setbmap.h \
-	setcptr.c \
-	setcptr.h \
 	setdval.c \
 	setdval.h \
 	setfocus.c \
@@ -88,11 +76,33 @@ libXi_la_SOURCES =	\
 	ungrdevb.h \
 	ungrdevk.c \
 	ungrdevk.h \
-	warpdevp.c \
-	warpdevp.h \
+	xiallowev.c \
+	xiallowev.h \
+	xichangecursor.c \
+	xichangecursor.h \
+	xichangehierarchy.c \
+	xichangehierarchy.h \
+	xigetclientpointer.c \
+	xigetclientpointer.h \
+	xigrabdev.c \
+	xigrabdev.h \
+	xipassivegrab.h \
+	xipassivegrab.c \
 	xiproperty.c \
 	xiproperty.h \
-	xiselev.c \
-	xiselev.h
+	xiquerydevice.c \
+	xiquerydevice.h \
+	xiquerypointer.c \
+	xiquerypointer.h \
+	xiqueryversion.c \
+	xiqueryversion.h \
+	xiselectev.c \
+	xiselectev.h \
+	xisetclientpointer.c \
+	xisetclientpointer.h \
+	xisetdevfocus.c \
+	xisetdevfocus.h \
+	xiwarppointer.c \
+	xiwarppointer.h
 
 EXTRA_DIST = stubs.c

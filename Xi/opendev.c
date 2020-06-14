@@ -50,8 +50,6 @@ SOFTWARE.
  *
  */
 
-#define	 NEED_EVENTS
-#define	 NEED_REPLIES
 #ifdef HAVE_DIX_CONFIG_H
 #include <dix-config.h>
 #endif
@@ -99,7 +97,6 @@ ProcXOpenDevice(ClientPtr client)
     int status = Success;
     xOpenDeviceReply rep;
     DeviceIntPtr dev;
-    XIClientPtr pXIClient;
 
     REQUEST(xOpenDeviceReq);
     REQUEST_SIZE_MATCH(xOpenDeviceReq);
@@ -115,19 +112,14 @@ ProcXOpenDevice(ClientPtr client)
     } else if (status != Success)
 	return status;
 
-    /* Don't let XI 1.x clients open devices other than floating SDs. */
-    pXIClient = dixLookupPrivate(&client->devPrivates, XIClientPrivateKey);
-    if (pXIClient->major_version < XI_2_Major)
-    {
-        if (dev->isMaster || (!dev->isMaster && dev->u.master))
+    if (IsMaster(dev))
             return BadDevice;
-    }
-
 
     OpenInputDevice(dev, client, &status);
     if (status != Success)
 	return status;
 
+    memset(&rep, 0, sizeof(xOpenDeviceReply));
     rep.repType = X_Reply;
     rep.RepType = X_OpenDevice;
     rep.sequenceNumber = client->sequence;
@@ -158,7 +150,7 @@ ProcXOpenDevice(ClientPtr client)
     }
     evbase[j].class = OtherClass;
     evbase[j++].event_type_base = event_base[OtherClass];
-    rep.length = (j * sizeof(xInputClassInfo) + 3) >> 2;
+    rep.length = bytes_to_int32(j * sizeof(xInputClassInfo));
     rep.num_classes = j;
     WriteReplyToClient(client, sizeof(xOpenDeviceReply), &rep);
     WriteToClient(client, j * sizeof(xInputClassInfo), (char *)evbase);
