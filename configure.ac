@@ -390,7 +390,7 @@ AM_CONDITIONAL(PPC_VIDEO, [test "x$PPC_VIDEO" = xyes])
 AM_CONDITIONAL(SPARC64_VIDEO, [test "x$SPARC64_VIDEO" = xyes])
 
 DRI=no
-USE_SIGIO_BY_DEFAULT="yes"
+KDRIVE_HW=no
 dnl it would be nice to autodetect these *CONS_SUPPORTs
 case $host_os in
   *freebsd* | *dragonfly*)
@@ -417,6 +417,7 @@ case $host_os in
 	;;
   *linux*)
 	DRI=yes
+	KDRIVE_HW=yes
 	;;
   *solaris*)
 	PKG_CHECK_EXISTS(libdrm, DRI=yes, DRI=no)
@@ -431,6 +432,7 @@ case $host_os in
 	CFLAGS="$CFLAGS -DFD_SETSIZE=256"
 	;;
 esac
+AM_CONDITIONAL(KDRIVE_HW, test "x$KDRIVE_HW" = xyes)
 
 dnl augment XORG_RELEASE_VERSION for our snapshot number and to expose the
 dnl major number
@@ -619,6 +621,7 @@ AC_ARG_ENABLE(xselinux,       AS_HELP_STRING([--disable-xselinux], [Build SELinu
 AC_ARG_ENABLE(xcsecurity,     AS_HELP_STRING([--disable-xcsecurity], [Build Security extension (default: disabled)]), [XCSECURITY=$enableval], [XCSECURITY=no])
 AC_ARG_ENABLE(xcalibrate,     AS_HELP_STRING([--enable-xcalibrate], [Build XCalibrate extension (default: disabled)]), [XCALIBRATE=$enableval], [XCALIBRATE=no])
 AC_ARG_ENABLE(tslib,          AS_HELP_STRING([--enable-tslib], [Build kdrive tslib touchscreen support (default: disabled)]), [TSLIB=$enableval], [TSLIB=no])
+AC_ARG_ENABLE(xevie,          AS_HELP_STRING([--disable-xevie], [Build XEvIE extension (default: enabled)]), [XEVIE=$enableval], [XEVIE=yes])
 AC_ARG_ENABLE(multibuffer,    AS_HELP_STRING([--enable-multibuffer], [Build Multibuffer extension (default: disabled)]), [MULTIBUFFER=$enableval], [MULTIBUFFER=no])
 AC_ARG_ENABLE(dbe,            AS_HELP_STRING([--disable-dbe], [Build DBE extension (default: enabled)]), [DBE=$enableval], [DBE=yes])
 AC_ARG_ENABLE(xf86bigfont,    AS_HELP_STRING([--disable-xf86bigfont], [Build XF86 Big Font extension (default: disabled)]), [XF86BIGFONT=$enableval], [XF86BIGFONT=no])
@@ -643,9 +646,11 @@ AC_ARG_ENABLE(xwin,    	      AS_HELP_STRING([--enable-xwin], [Build XWin server
 dnl kdrive and its subsystems
 AC_ARG_ENABLE(kdrive,         AS_HELP_STRING([--enable-kdrive], [Build kdrive servers (default: no)]), [KDRIVE=$enableval], [KDRIVE=no])
 AC_ARG_ENABLE(xephyr,         AS_HELP_STRING([--enable-xephyr], [Build the kdrive Xephyr server (default: auto)]), [XEPHYR=$enableval], [XEPHYR=auto])
+AC_ARG_ENABLE(xsdl,           AS_HELP_STRING([--enable-xsdl], [Build the kdrive Xsdl server (default: auto)]), [XSDL=$enableval], [XSDL=auto])
 AC_ARG_ENABLE(xfake,          AS_HELP_STRING([--enable-xfake], [Build the kdrive 'fake' server (default: auto)]), [XFAKE=$enableval], [XFAKE=auto])
 AC_ARG_ENABLE(xfbdev,         AS_HELP_STRING([--enable-xfbdev], [Build the kdrive framebuffer device server (default: auto)]), [XFBDEV=$enableval], [XFBDEV=auto])
-dnl kdrive options
+dnl kdrive and its subsystems
+AC_ARG_ENABLE(kdrive-vesa,    AS_HELP_STRING([--enable-kdrive-vesa], [Build the kdrive VESA-based servers (default: auto)]), [KDRIVEVESA=$enableval], [KDRIVEVESA=auto])
 AC_ARG_ENABLE(kdrive-kbd,     AS_HELP_STRING([--enable-kdrive-kbd], [Build kbd driver for kdrive (default: auto)]), [KDRIVE_KBD=$enableval], [KDRIVE_KBD=auto])
 AC_ARG_ENABLE(kdrive-mouse,   AC_HELP_STRING([--enable-kdrive-mouse], [Build mouse driver for kdrive (default: auto)]), [KDRIVE_MOUSE=$enableval], [KDRIVE_MOUSE=auto])
 AC_ARG_ENABLE(kdrive-evdev,   AC_HELP_STRING([--enable-kdrive-evdev], [Build evdev driver for kdrive (default: auto)]), [KDRIVE_EVDEV=$enableval], [KDRIVE_EVDEV=auto])
@@ -683,7 +688,7 @@ dnl If you're seeing an error here, be sure you installed the lib/xtrans module
 dnl first and if it's not in the default location, that you set the ACLOCAL
 dnl environment variable to find it, such as:
 dnl	ACLOCAL="aclocal -I ${PREFIX}/share/aclocal"
-m4_pattern_forbid([^XTRANS_CONNECTION_FLAGS$])
+m4_pattern_forbid(XTRANS_CONNECTION_FLAGS)
 
 # Transport selection macro from xtrans.m4
 XTRANS_CONNECTION_FLAGS
@@ -1986,12 +1991,24 @@ dnl kdrive DDX
 
 XEPHYR_LIBS=
 XEPHYR_INCS=
+XSDL_LIBS=
+XSDL_INCS=
+XSDL_DIRS=
 
 AM_CONDITIONAL(KDRIVE, [test x$KDRIVE = xyes])
-
 if test "$KDRIVE" = yes; then
     AC_DEFINE(KDRIVESERVER,1,[Build Kdrive X server])
     AC_DEFINE(KDRIVEDDXACTIONS,,[Build kdrive ddx])
+
+    AC_CHECK_HEADERS([sys/vm86.h sys/io.h])
+    if test "$ac_cv_header_sys_vm86_h" = yes && test "x$KDRIVEVESA" = xauto; then
+        KDRIVEVESA=yes
+    fi
+
+    if test "x$KDRIVEVESA" = xyes; then
+        KDRIVEFBDEVLIB=yes
+        AC_DEFINE(KDRIVEVESA, 1, [Build VESA-based kdrive servers])
+    fi
 
     AC_CHECK_HEADERS([linux/fb.h])
     if test "$ac_cv_header_linux_fb_h" = yes && test "x$XFBDEV" = xauto; then
@@ -2003,22 +2020,30 @@ if test "$KDRIVE" = yes; then
         AC_DEFINE(KDRIVEFBDEV, 1, [Build fbdev-based kdrive server])
     fi
 
-
-    PKG_CHECK_MODULES([TSLIB], [tslib-0.0], [HAVE_TSLIB="yes"], [HAVE_TSLIB="no"])
-    if test "x$HAVE_TSLIB" = xno; then
-        AC_CHECK_LIB(ts, ts_open, [HAVE_TSLIB="yes"])
-    fi
-
-    if test "xTSLIB" = xauto; then
-        TSLIB="$HAVE_TSLIB"
+    # tslib...
+    AC_CHECK_LIB(ts, ts_open, [HAVE_TSLIB="yes"])
+    if test "x$TSLIB" = xauto && test "x$HAVE_TSLIB" = xyes; then
+        TSLIB=yes
     fi
 
     if test "x$TSLIB" = xyes; then
         if ! test "x$HAVE_TSLIB" = xyes; then
-            AC_MSG_ERROR([tslib must be installed to build the tslib driver. See http://tslib.berlios.de/])
-        else
-            AC_DEFINE(TSLIB, 1, [Have tslib support])
+            AC_MSG_ERROR([tslib must be installed to build the tslib input driver.])
         fi
+        TSLIB_LIBS="-lts"
+        AC_DEFINE(TSLIB, 1, [Have tslib support])
+    fi
+
+    AC_CHECK_HEADERS([SDL/SDL.h])
+    if test x"$ac_cv_header_SDL_SDL_h" = xyes && test "x$XSDL" = xauto; then
+       XSDL=yes
+    fi
+
+    if test x"$XSDL" = xyes; then
+       # PKG_CHECK_MODULES(XSDL_EXTRA, Xfont xau $XDMCP_MODULES)
+       AC_DEFINE(XSDLSERVER,1,[Build Xsdl server])
+       XSDL_LIBS="`sdl-config --libs`"
+       XSDL_INCS="`sdl-config --cflags` $XSERVER_CFLAGS"
     fi
 
     if test "x$KDRIVE_KBD" = xyes; then
@@ -2031,12 +2056,12 @@ if test "$KDRIVE" = yes; then
        AC_DEFINE(KDRIVE_MOUSE, 1, [Enable KDrive mouse driver])
     fi
 
-    XEPHYR_REQUIRED_LIBS="x11 $LIBXEXT xfont xau xdmcp"
+    XEPHYR_REQUIRED_LIBS="x11 xext xfont xau xdmcp"
     if test "x$XV" = xyes; then
         XEPHYR_REQUIRED_LIBS="$XEPHYR_REQUIRED_LIBS xv"
     fi
     if test "x$DRI" = xyes && test "x$GLX" = xyes; then
-        XEPHYR_REQUIRED_LIBS="$XEPHYR_REQUIRED_LIBS $LIBGL libdrm"
+        XEPHYR_REQUIRED_LIBS="$XEPHYR_REQUIRED_LIBS gl libdrm"
     fi
 
     PKG_CHECK_MODULES(XEPHYR, $XEPHYR_REQUIRED_LIBS, [xephyr="yes"], [xephyr="no"])
@@ -2048,6 +2073,14 @@ if test "$KDRIVE" = yes; then
     AC_CHECK_FUNC([nanosleep], [],
         AC_CHECK_LIB([rt], [nanosleep], XEPHYR_LIBS="$XEPHYR_LIBS -lrt"))
     
+    if test "x$TSLIB" = xyes; then
+        PKG_CHECK_MODULES([TSLIB], [tslib-1.0], [HAVE_TSLIB="yes"], [HAVE_TSLIB="no"])
+        if test "x$HAVE_TSLIB" = xno; then
+            AC_MSG_ERROR([tslib must be installed to build the tslib driver. See http://tslib.berlios.de/])
+        fi
+        AC_DEFINE(TSLIB, 1, [Have tslib support])
+    fi
+
     # damage shadow extension glx (NOTYET) fb mi
     KDRIVE_INC='-I$(top_srcdir)/hw/kdrive/src'
     KDRIVE_PURE_INCS="$KDRIVE_INC $MIEXT_DAMAGE_INC $MIEXT_SHADOW_INC $XEXT_INC $FB_INC $MI_INC"
@@ -2092,6 +2125,8 @@ if test "$KDRIVE" = yes; then
 
     AC_SUBST([XEPHYR_LIBS])
     AC_SUBST([XEPHYR_INCS])
+    AC_SUBST([XSDL_LIBS])
+    AC_SUBST([XSDL_INCS])
 fi
 AC_SUBST([KDRIVE_INCS])
 AC_SUBST([KDRIVE_PURE_INCS])
@@ -2104,7 +2139,9 @@ AM_CONDITIONAL(KDRIVE_EVDEV, [test "x$KDRIVE_EVDEV" = xyes])
 AM_CONDITIONAL(KDRIVE_KBD,   [test "x$KDRIVE_KBD" = xyes])
 AM_CONDITIONAL(KDRIVE_MOUSE, [test "x$KDRIVE_MOUSE" = xyes])
 AM_CONDITIONAL(TSLIB, [test "x$HAVE_TSLIB" = xyes])
+AM_CONDITIONAL(KDRIVEVESA, [test "x$KDRIVEVESA" = xyes])
 AM_CONDITIONAL(KDRIVEFBDEV, [test "x$XFBDEV" = xyes])
+AM_CONDITIONAL(XSDLSERVER, [test x"$XSDL" = xyes])
 AM_CONDITIONAL(XEPHYR, [test "x$KDRIVE" = xyes && test "x$XEPHYR" = xyes])
 AM_CONDITIONAL(BUILD_KDRIVEFBDEVLIB, [test "x$KDRIVE" = xyes && test "x$KDRIVEFBDEVLIB" = xyes])
 AM_CONDITIONAL(XFAKESERVER, [test "x$KDRIVE" = xyes && test "x$XFAKE" = xyes])
@@ -2224,8 +2261,8 @@ hw/kdrive/ephyr/Makefile
 hw/kdrive/fake/Makefile
 hw/kdrive/fbdev/Makefile
 hw/kdrive/linux/Makefile
+hw/kdrive/sdl/Makefile
 hw/kdrive/src/Makefile
-test/Makefile
-test/xi2/Makefile
+hw/kdrive/vesa/Makefile
 xorg-server.pc
 ])
