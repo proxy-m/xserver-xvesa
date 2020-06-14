@@ -1927,7 +1927,7 @@ InitFonts (void)
 
     BuiltinRegisterFpeFunctions();
     FontFileRegisterFpeFunctions();
-    fs_register_fpe_functions();
+    ///fs_register_fpe_functions();
 }
 
 int
