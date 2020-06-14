@@ -2028,7 +2028,7 @@ KdEnqueueKeyboardEvent(KdKeyboardInfo   *ki,
         if (noXkbExtension)
 #endif
         {
-            KdCheckSpecialKeys(ki, type, key_code);
+//            KdCheckSpecialKeys(ki, type, key_code);
             KdHandleKeyboardEvent(ki, type, key_code);
 	}
 

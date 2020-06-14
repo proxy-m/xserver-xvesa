@@ -1,5 +1,5 @@
 /*
- * Copyright © 1999 Keith Packard
+ * Copyright ï¿½ 1999 Keith Packard
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -88,10 +88,10 @@ void
 fbdevCardFini (KdCardInfo *card);
 
 void
-fbdevGetColors (ScreenPtr pScreen, int n, xColorItem *pdefs);
+fbdevGetColors (ScreenPtr pScreen, int fb, int n, xColorItem *pdefs);
 
 void
-fbdevPutColors (ScreenPtr pScreen, int n, xColorItem *pdefs);
+fbdevPutColors (ScreenPtr pScreen, int fb, int n, xColorItem *pdefs);
 
 Bool
 fbdevMapFramebuffer (KdScreenInfo *screen);

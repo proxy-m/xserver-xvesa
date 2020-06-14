@@ -1,5 +1,5 @@
 /*
- * Copyright © 2000 Keith Packard
+ * Copyright ï¿½ 2000 Keith Packard
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -65,6 +65,13 @@ static void ErrorF(char*, ...);
 #include <X11/Xproto.h>
 #include <X11/Xos.h>
 #include "os.h"
+#endif
+
+#ifndef IF_MASK
+#define IF_MASK X86_EFLAGS_IF
+#endif
+#ifndef IOPL_MASK
+#define IOPL_MASK X86_EFLAGS_IOPL
 #endif
 
 typedef unsigned char	U8;

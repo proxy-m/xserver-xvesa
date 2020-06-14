@@ -1,5 +1,5 @@
 /*
- * Copyright © 1999 Keith Packard
+ * Copyright ï¿½ 1999 Keith Packard
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -28,7 +28,9 @@
 void
 InitCard (char *name)
 {
-    KdCardInfoAdd (&fbdevFuncs, 0);
+    KdCardAttr	attr;
+
+    KdCardInfoAdd (&fbdevFuncs, &attr, 0);
 }
 
 void
@@ -40,7 +42,17 @@ InitOutput (ScreenInfo *pScreenInfo, int argc, char **argv)
 void
 InitInput (int argc, char **argv)
 {
-    KdOsAddInputDrivers ();
+    KdKeyboardInfo *ki;
+
+    KdAddKeyboardDriver (&LinuxKeyboardDriver);
+    KdAddPointerDriver (&LinuxMouseDriver);
+#ifdef TSLIB
+    KdAddPointerDriver (&TsDriver);
+#endif
+
+    ki = KdParseKeyboard ("keybd");
+    KdAddKeyboard(ki);
+
     KdInitInput ();
 }
 
