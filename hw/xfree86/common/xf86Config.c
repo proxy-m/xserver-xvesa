@@ -95,6 +95,23 @@ extern DeviceAssocRec mouse_assoc;
 			"%P/lib/X11/%X.%H," "%P/lib/X11/%X-%M," \
 			"%P/lib/X11/%X"
 #endif
+#ifndef ROOT_CONFIGDIRPATH
+#define ROOT_CONFIGDIRPATH	"%A," "%R," \
+				"/etc/X11/%R," "%P/etc/X11/%R," \
+				"/etc/X11/%X-%M," "/etc/X11/%X," "/etc/%X," \
+				"%P/etc/X11/%X.%H," "%P/etc/X11/%X-%M," \
+				"%P/etc/X11/%X," \
+				"%P/lib/X11/%X.%H," "%P/lib/X11/%X-%M," \
+				"%P/lib/X11/%X"
+#endif
+#ifndef USER_CONFIGDIRPATH
+#define USER_CONFIGDIRPATH	"/etc/X11/%S," "%P/etc/X11/%S," \
+				"/etc/X11/%X-%M," "/etc/X11/%X," "/etc/%X," \
+				"%P/etc/X11/%X.%H," "%P/etc/X11/%X-%M," \
+				"%P/etc/X11/%X," \
+				"%P/lib/X11/%X.%H," "%P/lib/X11/%X-%M," \
+				"%P/lib/X11/%X"
+#endif
 #ifndef PROJECTROOT
 #define PROJECTROOT	"/usr/X11R6"
 #endif

@@ -1,0 +1,1 @@
+./configure --prefix=/usr --enable-kdrive-vesa --disable-composite --disable-xv --disable-xinerama --disable-screensaver --disable-xselinux --disable-xcsecurity  --disable-dmx  --disable-xorg --disable-xnest --enable-xfree86-utils  --disable-dri --disable-dri2 --enable-kdrive   --enable-kdrive-kbd
